@@ -26,7 +26,7 @@ func DefaultRegistry() Registry {
 		},
 		"ross": {
 			ID:            "ross",
-			PackagedSkill: setFromSlice([]string{"create-issue", "read-issue", "read-backend", "update-issue"}),
+			PackagedSkill: setFromSlice([]string{"create-issue", "read-issue", "read-github", "read-backend", "update-issue"}),
 		},
 		"garth": {
 			ID:            "garth",
@@ -65,6 +65,7 @@ func DefaultRegistry() Registry {
 		"create-connect",
 		"create-issue",
 		"read-issue",
+		"read-github",
 		"read-backend",
 		"update-issue",
 		"update-company",

@@ -41,6 +41,119 @@ services:
       - slack_orchestrator_gomod:/go/pkg/mod
       - slack_orchestrator_gocache:/root/.cache/go-build
 
+  agent-factory-admin:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+    entrypoint: ["/app/agent-factory-admin"]
+    ports:
+      - "${AGENT_FACTORY_ADMIN_PORT:-8091}:8091"
+    environment:
+      AGENT_FACTORY_ADMIN_HTTP_ADDR: ":8091"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      CAPABILITY_CATALOG_READ_TOKEN: ${CAPABILITY_CATALOG_READ_TOKEN:-}
+      REQUIRE_CAPABILITY_CATALOG_READ_TOKEN: ${REQUIRE_CAPABILITY_CATALOG_READ_TOKEN:-false}
+      COMPANY_CHANNELS_REDIS_KEY: ${COMPANY_CHANNELS_REDIS_KEY:-employee-factory:company_channels}
+      CAPABILITY_ROUTING_EVENTS_REDIS_KEY: ${CAPABILITY_ROUTING_EVENTS_REDIS_KEY:-employee-factory:capability_routing_events}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      JOANNE_HUMANS_WELCOME_TRIGGER_URL: ${JOANNE_HUMANS_WELCOME_TRIGGER_URL:-}
+      JOANNE_HUMANS_WELCOME_TRIGGER_TOKEN: ${JOANNE_HUMANS_WELCOME_TRIGGER_TOKEN:-}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  makeacompany-backend:
+    profiles: ["local"]
+    build:
+      context: ../makeacompany-ai
+      dockerfile: deploy/docker/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - agent-factory-admin
+    ports:
+      - "${MAKEACOMPANY_BACKEND_PORT:-8090}:8080"
+    environment:
+      PORT: "8080"
+      APP_BASE_URL: ${MAKEACOMPANY_APP_BASE_URL:-http://localhost:3000}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      COMPANY_CHANNELS_REDIS_URL: ${COMPANY_CHANNELS_REDIS_URL:-}
+      COMPANY_CHANNELS_REDIS_KEY: ${COMPANY_CHANNELS_REDIS_KEY:-employee-factory:company_channels}
+      CAPABILITY_ROUTING_EVENTS_REDIS_KEY: ${CAPABILITY_ROUTING_EVENTS_REDIS_KEY:-employee-factory:capability_routing_events}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      CAPABILITY_CATALOG_READ_TOKEN: ${CAPABILITY_CATALOG_READ_TOKEN:-}
+      REQUIRE_CAPABILITY_CATALOG_READ_TOKEN: ${REQUIRE_CAPABILITY_CATALOG_READ_TOKEN:-false}
+      ADMIN_CATALOG_TOKEN: ${ADMIN_CATALOG_TOKEN:-}
+      ADMIN_SIGN_IN_ALLOWLIST: ${ADMIN_SIGN_IN_ALLOWLIST:-}
+      ADMIN_SESSION_TTL_SEC: ${ADMIN_SESSION_TTL_SEC:-259200}
+      SLACK_ORCHESTRATOR_CAPABILITY_CATALOG_URL: ${SLACK_ORCHESTRATOR_CAPABILITY_CATALOG_URL:-http://slack-orchestrator:8080/v1/public/capability-catalog}
+      ORCHESTRATOR_DEBUG_BASE_URL: ${ORCHESTRATOR_DEBUG_BASE_URL:-http://slack-orchestrator:8080}
+      ORCHESTRATOR_DEBUG_TOKEN: ${ORCHESTRATOR_DEBUG_TOKEN:-}
+      AGENT_FACTORY_ADMIN_BASE_URL: ${AGENT_FACTORY_ADMIN_BASE_URL:-http://agent-factory-admin:8091}
+      AGENT_FACTORY_ADMIN_TOKEN: ${AGENT_FACTORY_ADMIN_TOKEN:-${BACKEND_INTERNAL_SERVICE_TOKEN}}
+      JOANNE_HUMANS_WELCOME_TRIGGER_URL: ${JOANNE_HUMANS_WELCOME_TRIGGER_URL:-}
+      JOANNE_HUMANS_WELCOME_TRIGGER_TOKEN: ${JOANNE_HUMANS_WELCOME_TRIGGER_TOKEN:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      PORTAL_AUTH_EMAIL_FROM: ${PORTAL_AUTH_EMAIL_FROM:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_ID_BASE_PLAN: ${STRIPE_PRICE_ID_BASE_PLAN:-}
+      STRIPE_PRICE_ID_WAITLIST_DEPOSIT: ${STRIPE_PRICE_ID_WAITLIST_DEPOSIT:-}
+
+  makeacompany-frontend:
+    profiles: ["local"]
+    build:
+      context: ../makeacompany-ai
+      dockerfile: deploy/docker/frontend.Dockerfile
+      target: development
+    restart: unless-stopped
+    depends_on:
+      - makeacompany-backend
+    ports:
+      - "${MAKEACOMPANY_FRONTEND_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_BACKEND_API_BASE_URL: ${NEXT_PUBLIC_BACKEND_API_BASE_URL:-http://localhost:${MAKEACOMPANY_BACKEND_PORT:-8090}}
+      BACKEND_INTERNAL_API_BASE_URL: ${BACKEND_INTERNAL_API_BASE_URL:-http://makeacompany-backend:8080}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3000}
+      APP_BASE_URL: ${MAKEACOMPANY_APP_BASE_URL:-http://localhost:3000}
+      ORCHESTRATOR_DEBUG_BASE_URL: ${ORCHESTRATOR_DEBUG_BASE_URL:-http://slack-orchestrator:8080}
+      ORCHESTRATOR_DEBUG_TOKEN: ${ORCHESTRATOR_DEBUG_TOKEN:-}
+      CAPABILITY_CATALOG_READ_TOKEN: ${CAPABILITY_CATALOG_READ_TOKEN:-}
+      NEXT_PUBLIC_LINKEDIN_PARTNER_ID: ${NEXT_PUBLIC_LINKEDIN_PARTNER_ID:-}
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - type: bind
+        source: ../makeacompany-ai/src
+        target: /app/src
+      - type: bind
+        source: ../makeacompany-ai/public
+        target: /app/public
+      - type: bind
+        source: ../makeacompany-ai/package.json
+        target: /app/package.json
+      - type: bind
+        source: ../makeacompany-ai/next.config.ts
+        target: /app/next.config.ts
+      - type: bind
+        source: ../makeacompany-ai/tsconfig.json
+        target: /app/tsconfig.json
+      - type: bind
+        source: ../makeacompany-ai/postcss.config.mjs
+        target: /app/postcss.config.mjs
+
   agent-joanne:
     profiles: ["local"]
     build:
@@ -82,6 +195,12 @@ services:
       ROSS_GITHUB_TOKEN: ${ROSS_GITHUB_TOKEN:-}
       ROSS_GITHUB_OWNER: ${ROSS_GITHUB_OWNER:-}
       ROSS_GITHUB_REPO: ${ROSS_GITHUB_REPO:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
+      JOANNE_GOOGLE_CLIENT_ID: ${JOANNE_GOOGLE_CLIENT_ID:-}
+      JOANNE_GOOGLE_CLIENT_SECRET: ${JOANNE_GOOGLE_CLIENT_SECRET:-}
+      JOANNE_GOOGLE_REFRESH_TOKEN: ${JOANNE_GOOGLE_REFRESH_TOKEN:-}
     volumes:
       - type: bind
         source: ../shared-contracts

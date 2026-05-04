@@ -55,12 +55,14 @@ Both include:
 - shared runtime plumbing (`NATS_URL`, `REDIS_URL`, `BACKEND_INTERNAL_SERVICE_TOKEN`)
 - Gemini provider defaults (`GEMINI_*`)
 
-## Core local stack (four repos)
+## Core local stack (five repos)
 
 `docker-compose.core.yml` wires:
 
 - `slack-orchestrator` (ingress + dispatch only, Tier-1 tool intent disabled)
+- `agent-factory-admin` (runtime authority for catalog + admin data paths)
 - `agent-factory` employees (`agent-joanne`, `agent-ross`, `agent-alex`, `agent-garth`, `agent-tim`, `agent-anna`)
+- `makeacompany-backend` + `makeacompany-frontend`
 - `skill-factory` validator service
 - `shared-contracts` validator service
 - local `nats` dependency
@@ -69,7 +71,7 @@ Run:
 
 - `docker compose -f docker-compose.core.yml --env-file .env.dev --profile local up --build`
 
-This leaves `makeacompany-ai` untouched while you test the core infra loop.
+This now boots the full local MakeACompany + agent runtime loop from one compose entrypoint.
 
 Serve mode now consumes orchestrator envelopes from JetStream:
 

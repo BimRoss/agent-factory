@@ -273,6 +273,27 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			FinalSummary: "read-web research completed",
 			Transport:    "slack",
 		}
+	} else if capabilityID == "read-github" {
+		if err := e.publisher.PublishUpdate(task, "Querying GitHub repos/code/files..."); err != nil {
+			return task, err
+		}
+		p, err := e.runReadGitHub(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
+	} else if capabilityID == "create-doc" {
+		if err := e.publisher.PublishUpdate(task, "Preparing create-doc request..."); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runCreateDoc(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
 	}
 	for _, update := range plan.ProgressUpdates {
 		if err := e.publisher.PublishUpdate(task, update); err != nil {

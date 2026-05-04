@@ -19,7 +19,9 @@ func defaultAdapters() map[string]CapabilityAdapter {
 	adapters := map[string]CapabilityAdapter{}
 	for _, adapter := range []CapabilityAdapter{
 		createIssueAdapter{},
+		createDocAdapter{},
 		createCompanyAdapter{},
+		readGitHubAdapter{},
 		readWebAdapter{},
 	} {
 		adapters[normalizeID(adapter.CapabilityID())] = adapter

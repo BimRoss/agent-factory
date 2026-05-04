@@ -85,7 +85,7 @@ func main() {
 	case "demo":
 		runDemo(engine, store)
 	case "serve":
-		if err := runServe(appConfig, engine, handoffStore); err != nil {
+		if err := runServe(appConfig, engine, handoffStore, publisher); err != nil {
 			log.Fatalf("serve: %v", err)
 		}
 	default:
@@ -136,7 +136,7 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 	}
 }
 
-func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store) error {
+func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher) error {
 	log.Printf("agent-factory serve mode employee=%s nats=%s stream=%s",
 		cfg.EmployeeID,
 		cfg.NatsURL,
@@ -146,7 +146,7 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *hando
 	defer cancel()
 
 	handler := func(ctx context.Context, payload []byte) error {
-		return handleOrchestratorPayload(ctx, cfg.EmployeeID, engine, handoffStore, payload)
+		return handleOrchestratorPayload(ctx, cfg, engine, handoffStore, publisher, payload)
 	}
 
 	errCh := make(chan error, 1)
@@ -174,16 +174,21 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *hando
 	}
 }
 
-func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *runtime.Engine, handoffStore *handoffremote.Store, payload []byte) error {
+func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher, payload []byte) error {
 	var event orchestratorevent.EventV1
 	if err := json.Unmarshal(payload, &event); err != nil {
 		log.Printf("orchestrator payload parse failed: %v", err)
 		return nil
 	}
+	orchestratorevent.EnsureRunAndTraceIDs(&event)
+	employeeID := cfg.EmployeeID
 	target := normalizeID(event.TargetEmployee)
 	if target != normalizeID(employeeID) {
 		log.Printf("orchestrator payload target mismatch expected=%s got=%s", employeeID, target)
 		return nil
+	}
+	if sp, ok := publisher.(*statusPublisher); ok {
+		sp.markPipelineChainWaiting(event)
 	}
 
 	if event.Continuation != nil && strings.TrimSpace(event.Continuation.HandoffID) != "" {
@@ -191,7 +196,7 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 			log.Printf("handoff continuation received but REDIS_URL is not configured; acking")
 			return nil
 		}
-		return handleHandoffContinuation(ctx, employeeID, engine, handoffStore, event)
+		return handleHandoffContinuation(ctx, cfg, engine, handoffStore, publisher, event)
 	}
 
 	capabilityID := strings.TrimSpace(event.Decision.ToolID)
@@ -221,13 +226,15 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 		return fmt.Errorf("start task %s: %w", taskID, err)
 	}
 	if capabilityID != "" {
-		if _, err := engine.ExecuteCapability(ctx, ownedTask, capabilityID, &event); err != nil {
+		executedTask, err := engine.ExecuteCapability(ctx, ownedTask, capabilityID, &event)
+		if err != nil {
 			if errors.Is(err, runtime.ErrHandoffDispatched) {
 				log.Printf("remote handoff dispatched task=%s tool=%s trace=%s", taskID, normalizeID(capabilityID), traceID)
 				return nil
 			}
 			return fmt.Errorf("execute capability %s for task %s: %w", capabilityID, taskID, err)
 		}
+		maybePublishPipelineContinuation(cfg, event, executedTask)
 		log.Printf("processed orchestrator event employee=%s task=%s tool=%s trace=%s kind=%s",
 			employeeID,
 			taskID,
@@ -237,9 +244,11 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 		)
 		return nil
 	}
-	if _, err := engine.ExecuteConversation(ownedTask); err != nil {
+	executedTask, err := engine.ExecuteConversation(ownedTask)
+	if err != nil {
 		return fmt.Errorf("execute conversation for task %s: %w", taskID, err)
 	}
+	maybePublishPipelineContinuation(cfg, event, executedTask)
 	log.Printf("processed orchestrator conversation employee=%s task=%s trace=%s kind=%s",
 		employeeID, taskID, traceID, kind)
 	_ = ctx
@@ -276,7 +285,8 @@ func newRemoteHandoffMaybe(cfg runtime.AppConfig) (runtime.RemoteHandoffForwarde
 	}
 }
 
-func handleHandoffContinuation(ctx context.Context, employeeID string, engine *runtime.Engine, store *handoffremote.Store, event orchestratorevent.EventV1) error {
+func handleHandoffContinuation(ctx context.Context, cfg runtime.AppConfig, engine *runtime.Engine, store *handoffremote.Store, publisher runtime.StatusPublisher, event orchestratorevent.EventV1) error {
+	employeeID := cfg.EmployeeID
 	hid := strings.TrimSpace(event.Continuation.HandoffID)
 	rec, err := store.Get(ctx, hid)
 	if err != nil {
@@ -309,6 +319,10 @@ func handleHandoffContinuation(ctx context.Context, employeeID string, engine *r
 	merge.SchemaVersion = firstNonEmpty(rec.EventSchemaVersion, event.SchemaVersion)
 	merge.TargetEmployee = employeeID
 	merge.Continuation = nil
+	orchestratorevent.EnsureRunAndTraceIDs(&merge)
+	if sp, ok := publisher.(*statusPublisher); ok {
+		sp.markPipelineChainWaiting(merge)
+	}
 
 	taskID := deriveTaskID(merge)
 	traceID := firstNonEmpty(merge.EffectiveTraceID(), taskID)
@@ -333,9 +347,11 @@ func handleHandoffContinuation(ctx context.Context, employeeID string, engine *r
 	if err != nil {
 		return fmt.Errorf("handoff start task %s: %w", taskID, err)
 	}
-	if _, err := engine.ExecuteCapability(ctx, ownedTask, capabilityID, nil); err != nil {
+	executedTask, err := engine.ExecuteCapability(ctx, ownedTask, capabilityID, nil)
+	if err != nil {
 		return fmt.Errorf("handoff execute %s: %w", capabilityID, err)
 	}
+	maybePublishPipelineContinuation(cfg, merge, executedTask)
 	if err := store.Delete(ctx, hid); err != nil {
 		log.Printf("handoff continuation: redis delete %s: %v", hid, err)
 	}
@@ -345,9 +361,23 @@ func handleHandoffContinuation(ctx context.Context, employeeID string, engine *r
 
 func deriveTaskID(event orchestratorevent.EventV1) string {
 	if v := strings.TrimSpace(event.RunID); v != "" {
+		if strings.EqualFold(strings.TrimSpace(event.Decision.ExecutionMode), orchestratorevent.ExecutionModePipeline) {
+			step := event.Decision.PipelineStepIndex
+			if step < 0 {
+				step = 0
+			}
+			return fmt.Sprintf("%s:step:%d:%s", v, step, normalizeID(event.TargetEmployee))
+		}
 		return v + ":" + normalizeID(event.TargetEmployee)
 	}
 	if v := strings.TrimSpace(event.TraceID); v != "" {
+		if strings.EqualFold(strings.TrimSpace(event.Decision.ExecutionMode), orchestratorevent.ExecutionModePipeline) {
+			step := event.Decision.PipelineStepIndex
+			if step < 0 {
+				step = 0
+			}
+			return fmt.Sprintf("%s:step:%d:%s", v, step, normalizeID(event.TargetEmployee))
+		}
 		return v + ":" + normalizeID(event.TargetEmployee)
 	}
 	if v := strings.TrimSpace(event.SlackEventID); v != "" {
@@ -359,6 +389,63 @@ func deriveTaskID(event orchestratorevent.EventV1) string {
 		return "msg:" + channel + ":" + messageTS + ":" + normalizeID(event.TargetEmployee)
 	}
 	return fmt.Sprintf("task-%d:%s", time.Now().UTC().UnixNano(), normalizeID(event.TargetEmployee))
+}
+
+func maybePublishPipelineContinuation(cfg runtime.AppConfig, current orchestratorevent.EventV1, task runtime.Task) {
+	d := current.Decision
+	if !strings.EqualFold(strings.TrimSpace(d.ExecutionMode), orchestratorevent.ExecutionModePipeline) {
+		return
+	}
+	steps := d.PipelineSteps
+	idx := d.PipelineStepIndex
+	if idx < 0 || idx >= len(steps) {
+		return
+	}
+	nextIdx := idx + 1
+	if nextIdx >= len(steps) {
+		return
+	}
+	next := steps[nextIdx]
+	nextTarget := normalizeID(next.TargetEmployee)
+	if nextTarget == "" {
+		return
+	}
+
+	out := current
+	out.SchemaVersion = orchestratorevent.SchemaVersionPipeline
+	out.TargetEmployee = nextTarget
+	out.Decision.PipelineStepIndex = nextIdx
+	out.Decision.Kind = strings.TrimSpace(next.Kind)
+	out.Decision.ToolID = strings.TrimSpace(next.ToolID)
+	out.Decision.Employees = []string{nextTarget}
+	out.Decision.PrimaryEmployee = nextTarget
+	out.Message.Text = strings.TrimSpace(next.StepText)
+	if out.Message.Text == "" {
+		out.Message.Text = strings.TrimSpace(current.Message.PipelineAnchorText)
+	}
+	if strings.TrimSpace(out.Message.PipelineAnchorText) == "" {
+		out.Message.PipelineAnchorText = strings.TrimSpace(current.Message.PipelineAnchorText)
+	}
+	orchestratorevent.EnsureRunAndTraceIDs(&out)
+	if strings.TrimSpace(out.RunID) == "" {
+		// Back-compat: if orchestrator did not populate run_id, anchor to the finished task id.
+		out.RunID = strings.TrimSpace(task.TraceID)
+		out.TraceID = strings.TrimSpace(task.TraceID)
+	}
+
+	log.Printf(
+		"pipeline: publish continuation run_id=%s trace_id=%s from=%s step=%d to=%s kind=%s tool=%s",
+		strings.TrimSpace(out.RunID),
+		strings.TrimSpace(out.TraceID),
+		normalizeID(current.TargetEmployee),
+		nextIdx,
+		nextTarget,
+		normalizeID(out.Decision.Kind),
+		normalizeID(out.Decision.ToolID),
+	)
+	if err := natsbus.PublishOrchestratorEvent(cfg.NatsURL, cfg.NatsStream, cfg.EmployeeID, &out); err != nil {
+		log.Printf("pipeline: publish continuation failed run_id=%s step=%d err=%v", strings.TrimSpace(out.RunID), nextIdx, err)
+	}
 }
 
 func modeFromDecision(event orchestratorevent.EventV1) string {
@@ -393,6 +480,7 @@ type statusPublisher struct {
 	processEmp string
 	waitEmoji  string
 	reacted    sync.Map // task ID -> struct{}; we added a waiting reaction for this task
+	botUserIDs map[string]string
 }
 
 func newStatusPublisherFromEnv() runtime.StatusPublisher {
@@ -410,6 +498,7 @@ func newStatusPublisherFromEnv() runtime.StatusPublisher {
 		byEmployee: by,
 		processEmp: processEmp,
 		waitEmoji:  emoji,
+		botUserIDs: parseMultiagentBotUserIDs(os.Getenv("MULTIAGENT_BOT_USER_IDS")),
 	}
 }
 
@@ -471,6 +560,113 @@ func normalizeWaitingReactionName(raw string) string {
 	s = strings.TrimPrefix(s, ":")
 	s = strings.TrimSuffix(s, ":")
 	return strings.TrimSpace(s)
+}
+
+func parseMultiagentBotUserIDs(raw string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		pair := strings.SplitN(part, "=", 2)
+		if len(pair) != 2 {
+			continue
+		}
+		emp := normalizeID(pair[0])
+		uid := strings.TrimSpace(pair[1])
+		if emp == "" || uid == "" {
+			continue
+		}
+		out[emp] = uid
+	}
+	return out
+}
+
+func (s *statusPublisher) markPipelineChainWaiting(event orchestratorevent.EventV1) {
+	if s == nil || s.waitEmoji == "" || s.waitEmoji == "-" {
+		return
+	}
+	d := event.Decision
+	if !strings.EqualFold(strings.TrimSpace(d.ExecutionMode), orchestratorevent.ExecutionModePipeline) {
+		return
+	}
+	idx := d.PipelineStepIndex
+	steps := d.PipelineSteps
+	if idx <= 0 || idx >= len(steps) {
+		return
+	}
+	prevEmp := normalizeID(steps[idx-1].TargetEmployee)
+	if prevEmp == "" {
+		return
+	}
+	prevUID := strings.TrimSpace(s.botUserIDs[prevEmp])
+	if prevUID == "" {
+		return
+	}
+	api := s.processClient()
+	if api == nil {
+		return
+	}
+	channelID := strings.TrimSpace(event.Message.ChannelID)
+	if channelID == "" {
+		return
+	}
+	threadTS := strings.TrimSpace(firstNonEmpty(event.Message.ThreadTS, event.Message.MessageTS))
+	if threadTS == "" {
+		return
+	}
+	hist, _, _, err := api.GetConversationRepliesContext(context.Background(), &slack.GetConversationRepliesParameters{
+		ChannelID: channelID,
+		Timestamp: threadTS,
+		Inclusive: true,
+		Limit:     200,
+	})
+	if err != nil {
+		log.Printf("pipeline: wait-reaction fetch thread failed run_id=%s step=%d err=%v", strings.TrimSpace(event.RunID), idx, err)
+		return
+	}
+	targetTS := ""
+	for _, msg := range hist {
+		if strings.TrimSpace(msg.User) != prevUID {
+			continue
+		}
+		ts := strings.TrimSpace(msg.Timestamp)
+		if ts == "" {
+			continue
+		}
+		if ts > targetTS {
+			targetTS = ts
+		}
+	}
+	if targetTS == "" {
+		return
+	}
+	ref := slack.NewRefToMessage(channelID, targetTS)
+	if err := api.AddReactionContext(context.Background(), s.waitEmoji, ref); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "already_reacted") {
+			return
+		}
+		log.Printf(
+			"pipeline: wait-reaction add failed run_id=%s from=%s to=%s step=%d ts=%s err=%v",
+			strings.TrimSpace(event.RunID),
+			prevEmp,
+			normalizeID(event.TargetEmployee),
+			idx,
+			targetTS,
+			err,
+		)
+		return
+	}
+	log.Printf(
+		"pipeline: wait-reaction added run_id=%s from=%s to=%s step=%d ts=%s emoji=%s",
+		strings.TrimSpace(event.RunID),
+		prevEmp,
+		normalizeID(event.TargetEmployee),
+		idx,
+		targetTS,
+		s.waitEmoji,
+	)
 }
 
 // threadContextFuncFromEnv returns a Slack thread transcript fetcher when
