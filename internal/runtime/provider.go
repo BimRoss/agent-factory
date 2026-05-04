@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -12,6 +13,10 @@ type ProviderConfig struct {
 	KeySource         string
 	APIKey            string
 	EnableWebResearch bool
+	// MaxOutputTokens caps visible generation per conversation turn (Gemini generationConfig.maxOutputTokens).
+	// When zero, research_gemini.go uses defaults that assume Flash-sized budgets; Pro/thinking models may need higher limits via env.
+	MaxOutputTokens        int
+	MaxOutputTokensWithWeb int
 }
 
 func LoadProviderConfigFromEnv() (ProviderConfig, error) {
@@ -25,7 +30,7 @@ func LoadProviderConfigFromEnv() (ProviderConfig, error) {
 
 	model := strings.TrimSpace(firstNonEmpty(
 		os.Getenv("GEMINI_MODEL"),
-		"gemini-2.5-pro",
+		"gemini-3-flash-preview",
 	))
 
 	byok := strings.TrimSpace(os.Getenv("BYOK_GEMINI_API_KEY"))
@@ -41,13 +46,30 @@ func LoadProviderConfigFromEnv() (ProviderConfig, error) {
 		return ProviderConfig{}, fmt.Errorf("missing Gemini API key: set GEMINI_API_KEY (or BYOK_GEMINI_API_KEY)")
 	}
 
+	maxOut := parseIntEnvPositiveOrZero(os.Getenv("GEMINI_CONV_MAX_OUTPUT_TOKENS"))
+	maxOutWeb := parseIntEnvPositiveOrZero(os.Getenv("GEMINI_CONV_MAX_OUTPUT_TOKENS_WITH_SEARCH"))
+
 	return ProviderConfig{
-		Provider:          provider,
-		Model:             model,
-		KeySource:         keySource,
-		APIKey:            key,
-		EnableWebResearch: parseBoolEnv(os.Getenv("GEMINI_ENABLE_WEB_RESEARCH"), true),
+		Provider:               provider,
+		Model:                  model,
+		KeySource:              keySource,
+		APIKey:                 key,
+		EnableWebResearch:      parseBoolEnv(os.Getenv("GEMINI_ENABLE_WEB_RESEARCH"), true),
+		MaxOutputTokens:        maxOut,
+		MaxOutputTokensWithWeb: maxOutWeb,
 	}, nil
+}
+
+func parseIntEnvPositiveOrZero(raw string) int {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 func firstNonEmpty(values ...string) string {

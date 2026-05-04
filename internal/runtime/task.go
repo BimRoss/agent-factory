@@ -21,6 +21,8 @@ type Task struct {
 type StatusPublisher interface {
 	PublishStatus(event LifecycleEvent) error
 	PublishUpdate(task Task, message string) error
+	// PublishThreadNotice posts visible text in the Slack thread (e.g. handoff). Does not clear the waiting reaction.
+	PublishThreadNotice(task Task, text string) error
 	PublishFinal(task Task, payload RenderPayload) error
 	// ClearInboundReaction removes the "working" reaction from the triggering message (best-effort).
 	ClearInboundReaction(task Task) error

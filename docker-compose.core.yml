@@ -8,6 +8,13 @@ services:
       - "8222:8222"
     command: ["-js", "-m", "8222"]
 
+  redis:
+    profiles: ["local"]
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
   slack-orchestrator:
     profiles: ["local"]
     build:
@@ -42,6 +49,7 @@ services:
     restart: unless-stopped
     depends_on:
       - nats
+      - redis
     environment:
       AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
       EMPLOYEE_ID: "joanne"
@@ -57,11 +65,23 @@ services:
       MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
       SLACK_BOT_TOKEN: ${JOANNE_SLACK_BOT_TOKEN}
       SLACK_APP_TOKEN: ${JOANNE_SLACK_APP_TOKEN}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      # Needed so thread replies after internal handoff post as Ross (same token as agent-ross).
+      ROSS_SLACK_BOT_TOKEN: ${ROSS_SLACK_BOT_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-BimRoss}
+      GITHUB_REPO: ${GITHUB_REPO:-create-issue}
+      JOANNE_GITHUB_TOKEN: ${JOANNE_GITHUB_TOKEN:-}
+      JOANNE_GITHUB_OWNER: ${JOANNE_GITHUB_OWNER:-}
+      JOANNE_GITHUB_REPO: ${JOANNE_GITHUB_REPO:-}
+      # Same keys as agent-ross so internal handoff (e.g. Joanne → Ross create-issue) can load ROSS_* while still running in this container.
+      ROSS_GITHUB_TOKEN: ${ROSS_GITHUB_TOKEN:-}
+      ROSS_GITHUB_OWNER: ${ROSS_GITHUB_OWNER:-}
+      ROSS_GITHUB_REPO: ${ROSS_GITHUB_REPO:-}
     volumes:
       - type: bind
         source: ../shared-contracts
@@ -78,6 +98,7 @@ services:
     restart: unless-stopped
     depends_on:
       - nats
+      - redis
     environment:
       AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
       EMPLOYEE_ID: "ross"
@@ -93,11 +114,17 @@ services:
       MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
       NATS_URL: ${NATS_URL:-nats://nats:4222}
       NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
-      REDIS_URL: ${REDIS_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
       SLACK_BOT_TOKEN: ${ROSS_SLACK_BOT_TOKEN}
       SLACK_APP_TOKEN: ${ROSS_SLACK_APP_TOKEN}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-BimRoss}
+      GITHUB_REPO: ${GITHUB_REPO:-create-issue}
+      ROSS_GITHUB_TOKEN: ${ROSS_GITHUB_TOKEN:-}
+      ROSS_GITHUB_OWNER: ${ROSS_GITHUB_OWNER:-}
+      ROSS_GITHUB_REPO: ${ROSS_GITHUB_REPO:-}
     volumes:
       - type: bind
         source: ../shared-contracts

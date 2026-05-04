@@ -18,6 +18,7 @@ func AgentReplyBlocksWithLimits(fullText string, lim Limits) ([]slack.Block, str
 		return nil, ""
 	}
 	norm := NormalizeModelTextToSlackMrkdwn(fullText)
+	norm = ApplySparseMrkdwnEmphasis(norm)
 	fallback := PlainNotificationFallback(norm)
 	if fallback == "" {
 		fallback = "New message from the agent"

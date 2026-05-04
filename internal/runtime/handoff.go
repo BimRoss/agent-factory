@@ -1,6 +1,9 @@
 package runtime
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type HandoffRequest struct {
 	Task            Task
@@ -27,10 +30,6 @@ func TransferOwnership(task Task, req HandoffRequest, bus HandoffBus, publisher 
 		return task, fmt.Errorf("handoff source and destination must differ")
 	}
 
-	if err := publisher.PublishUpdate(task, fmt.Sprintf("Transferring to %s...", req.ToEmployeeID)); err != nil {
-		return task, err
-	}
-
 	result, err := bus.RequestHandoff(req)
 	if err != nil {
 		_ = publisher.ClearInboundReaction(task)
@@ -43,5 +42,21 @@ func TransferOwnership(task Task, req HandoffRequest, bus HandoffBus, publisher 
 
 	_ = publisher.ClearInboundReaction(task)
 	task.OwnerEmployeeID = req.ToEmployeeID
+
+	// Thread posts use task.OwnerEmployeeID to pick Slack bot token — publish only after ownership transfers.
+	if err := publisher.PublishThreadNotice(task, receiverTakingNotice(req)); err != nil {
+		return task, err
+	}
+	if err := publisher.PublishUpdate(task, fmt.Sprintf("Executing capability as %s…", req.ToEmployeeID)); err != nil {
+		return task, err
+	}
 	return task, nil
+}
+
+func receiverTakingNotice(req HandoffRequest) string {
+	skill := strings.TrimSpace(req.RequiredSkillID)
+	if skill == "" {
+		return "On it."
+	}
+	return fmt.Sprintf("On it — running `%s`.", skill)
 }

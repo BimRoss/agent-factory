@@ -62,22 +62,19 @@ func (e *Engine) ExecuteConversation(task Task) (Task, error) {
 		}
 	}
 	res, err := runGeminiConversation(context.Background(), e.provider, task.OwnerEmployeeID, task.RequestText, task.Mode, memoryContext)
-	replyText := strings.TrimSpace(res.Text)
 	if err != nil {
-		log.Printf("conversation: model failed task=%s employee=%s err=%v", task.ID, task.OwnerEmployeeID, err)
-		replyText = defaultConversationFallback(task.OwnerEmployeeID, task.RequestText, task.Mode)
+		log.Printf("conversation: all model attempts failed task=%s employee=%s err=%v", task.ID, task.OwnerEmployeeID, err)
+		return e.failConversationTask(task, "conversation model exhausted retries", err)
 	}
+	replyText := strings.TrimSpace(res.Text)
 	if replyText == "" {
-		log.Printf("conversation: empty reply after success task=%s employee=%s", task.ID, task.OwnerEmployeeID)
-		replyText = defaultConversationFallback(task.OwnerEmployeeID, task.RequestText, task.Mode)
-	}
-	if err == nil && len(res.Citations) > 0 && replyText != "" {
-		replyText = replyText + "\n\nSources:\n- " + strings.Join(res.Citations, "\n- ")
+		log.Printf("conversation: empty reply after successful generate task=%s employee=%s", task.ID, task.OwnerEmployeeID)
+		return e.failConversationTask(task, "conversation returned empty text", fmt.Errorf("empty reply"))
 	}
 
 	finishedAt := time.Now().UTC()
 	finalSummary := "conversation response completed"
-	if err == nil && len(res.Citations) > 0 {
+	if len(res.Citations) > 0 {
 		finalSummary = "conversation response completed (with web grounding)"
 	}
 	finalPayload := RenderPayload{
@@ -123,4 +120,42 @@ func (e *Engine) ExecuteConversation(task Task) (Task, error) {
 		return task, err
 	}
 	return task, nil
+}
+
+func (e *Engine) failConversationTask(task Task, traceNote string, cause error) (Task, error) {
+	failedAt := time.Now().UTC()
+	failEntry := TraceEntry{
+		Sequence:       len(e.traces.ListTrace(task.ID)) + 1,
+		EmployeeID:     task.OwnerEmployeeID,
+		SkillID:        "conversation",
+		Status:         "failed",
+		Note:           traceNote,
+		RenderOutputID: "",
+		Timestamp:      failedAt,
+	}
+	if err := e.traces.AppendTrace(task.ID, failEntry); err != nil {
+		_ = e.publisher.ClearInboundReaction(task)
+		return task, err
+	}
+	task.LastState = StateFailed
+	task.UpdatedAt = failedAt
+	if err := e.tasks.SaveTask(task); err != nil {
+		_ = e.publisher.ClearInboundReaction(task)
+		return task, err
+	}
+	if err := e.publisher.PublishStatus(LifecycleEvent{
+		TaskID:           task.ID,
+		ThreadAnchor:     task.ThreadAnchor,
+		TraceID:          task.TraceID,
+		EmployeeID:       task.OwnerEmployeeID,
+		StateFrom:        StateRunning,
+		StateTo:          StateFailed,
+		TransitionReason: traceNote,
+		Timestamp:        failedAt,
+	}); err != nil {
+		_ = e.publisher.ClearInboundReaction(task)
+		return task, err
+	}
+	_ = e.publisher.ClearInboundReaction(task)
+	return task, fmt.Errorf("conversation: %w", cause)
 }

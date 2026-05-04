@@ -11,6 +11,13 @@ type EventV1 struct {
 	TargetEmployee string     `json:"target_employee"`
 	Decision       DecisionV1 `json:"decision"`
 	Message        MessageV1  `json:"message"`
+	// Continuation is set when another worker forwarded work via Redis-backed handoff (see handoffremote).
+	Continuation *ContinuationV1 `json:"continuation,omitempty"`
+}
+
+// ContinuationV1 references durable state written before publishing to slack.work.<employee>.events.
+type ContinuationV1 struct {
+	HandoffID string `json:"handoff_id"`
 }
 
 type DecisionV1 struct {

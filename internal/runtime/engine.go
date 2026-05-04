@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bimross/agent-factory/internal/orchestratorevent"
 )
 
 // ThreadContextFunc optionally supplies Slack thread history (e.g. from
@@ -22,9 +24,10 @@ type Engine struct {
 	provider      ProviderConfig
 	memory        *MemoryBank
 	threadContext ThreadContextFunc
+	remote        RemoteHandoffForwarder
 }
 
-func NewEngine(publisher StatusPublisher, handoff HandoffBus, tasks TaskStore, traces TraceStore, registry Registry, toolSpecs map[string]ToolSpec, provider ProviderConfig, memory *MemoryBank, threadContext ThreadContextFunc) *Engine {
+func NewEngine(publisher StatusPublisher, handoff HandoffBus, tasks TaskStore, traces TraceStore, registry Registry, toolSpecs map[string]ToolSpec, provider ProviderConfig, memory *MemoryBank, threadContext ThreadContextFunc, remote RemoteHandoffForwarder) *Engine {
 	if toolSpecs == nil {
 		toolSpecs = map[string]ToolSpec{}
 	}
@@ -38,6 +41,7 @@ func NewEngine(publisher StatusPublisher, handoff HandoffBus, tasks TaskStore, t
 		provider:      provider,
 		memory:        memory,
 		threadContext: threadContext,
+		remote:        remote,
 	}
 }
 
@@ -122,7 +126,7 @@ func (e *Engine) DelegateIfMissingSkill(task Task, toEmployeeID, missingSkillID 
 	return updatedTask, nil
 }
 
-func (e *Engine) ExecuteCapability(task Task, capabilityID string) (Task, error) {
+func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID string, source *orchestratorevent.EventV1) (Task, error) {
 	capabilityID = normalizeID(capabilityID)
 	if capabilityID == "" {
 		return task, fmt.Errorf("capability id is required")
@@ -135,6 +139,45 @@ func (e *Engine) ExecuteCapability(task Task, capabilityID string) (Task, error)
 		toEmployeeID, ok := e.registry.FindEmployeeForCapability(capabilityID, task.OwnerEmployeeID)
 		if !ok || toEmployeeID == "" {
 			return task, fmt.Errorf("no employee available for capability %s", capabilityID)
+		}
+		// True multi-pod handoff: Redis + JetStream to slack.work.<to>.events (no local execution on this process).
+		if e.remote != nil && source != nil {
+			_ = e.publisher.PublishThreadNotice(task, fmt.Sprintf("Routing `%s` to %s — their worker is taking it from here.", capabilityID, displayEmployeeName(toEmployeeID)))
+			if err := e.remote.ForwardRemoteHandoff(ctx, task, task.OwnerEmployeeID, toEmployeeID, capabilityID, source); err != nil {
+				return task, err
+			}
+			fwdAt := time.Now().UTC()
+			prevState := task.LastState
+			task.LastState = StateForwarded
+			task.UpdatedAt = fwdAt
+			fwdEntry := TraceEntry{
+				Sequence:       len(e.traces.ListTrace(task.ID)) + 1,
+				EmployeeID:     task.OwnerEmployeeID,
+				SkillID:        capabilityID,
+				Status:         "forwarded_remote",
+				Note:           fmt.Sprintf("dispatched to %s via NATS+Redis (no local execution)", toEmployeeID),
+				RenderOutputID: "",
+				Timestamp:      fwdAt,
+			}
+			if err := e.traces.AppendTrace(task.ID, fwdEntry); err != nil {
+				return task, err
+			}
+			if err := e.tasks.SaveTask(task); err != nil {
+				return task, err
+			}
+			if err := e.publisher.PublishStatus(LifecycleEvent{
+				TaskID:           task.ID,
+				ThreadAnchor:     task.ThreadAnchor,
+				TraceID:          task.TraceID,
+				EmployeeID:       task.OwnerEmployeeID,
+				StateFrom:        prevState,
+				StateTo:          StateForwarded,
+				TransitionReason: fmt.Sprintf("remote handoff to %s for %s", toEmployeeID, capabilityID),
+				Timestamp:        fwdAt,
+			}); err != nil {
+				return task, err
+			}
+			return task, ErrHandoffDispatched
 		}
 		prevState := task.LastState
 		task.LastState = StateWaitingHandoff
@@ -193,7 +236,20 @@ func (e *Engine) ExecuteCapability(task Task, capabilityID string) (Task, error)
 		return task, err
 	}
 	plan := capabilityExecutionPlan(task, capabilityID, e.toolSpecs)
-	if capabilityID == "read-web" {
+	if capabilityID == "create-issue" {
+		// PublishUpdate before the long path so the status publisher can add the waiting
+		// reaction (e.g. hourglass) to the trigger message while GitHub + model work run.
+		if err := e.publisher.PublishUpdate(task, "Gathering thread context and drafting the GitHub issue…"); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runCreateIssue(task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
+	} else if capabilityID == "read-web" {
 		query := strings.TrimSpace(task.RequestText)
 		if query == "" {
 			query = "Latest relevant updates"
@@ -201,12 +257,16 @@ func (e *Engine) ExecuteCapability(task Task, capabilityID string) (Task, error)
 		if err := e.publisher.PublishUpdate(task, "Running Gemini research query..."); err != nil {
 			return task, err
 		}
-		research, err := runGeminiResearch(context.Background(), e.provider, query)
+		research, err := runGeminiResearch(ctx, e.provider, query)
 		if err != nil {
 			_ = e.publisher.ClearInboundReaction(task)
 			return task, err
 		}
 		summary := FormatResearchResultForSlack(research)
+		if strings.TrimSpace(summary) == "" {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, fmt.Errorf("read-web: model returned no summary")
+		}
 		plan.FinalPayload = RenderPayload{
 			OutputID:     fmt.Sprintf("%s-read-web", task.ID),
 			FallbackText: summary,
@@ -272,4 +332,15 @@ func (e *Engine) ExecuteCapability(task Task, capabilityID string) (Task, error)
 		return task, err
 	}
 	return task, nil
+}
+
+func displayEmployeeName(employeeID string) string {
+	id := strings.ToLower(strings.TrimSpace(employeeID))
+	if id == "" {
+		return "teammate"
+	}
+	if len(id) == 1 {
+		return strings.ToUpper(id)
+	}
+	return strings.ToUpper(id[:1]) + id[1:]
 }

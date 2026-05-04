@@ -17,16 +17,10 @@ type GeminiResearchResult struct {
 	Citations []string
 }
 
-// FormatResearchResultForSlack builds plaintext for Slack from a Gemini research call (read-web or conversation-triggered).
+// FormatResearchResultForSlack builds plaintext for Slack from a Gemini research call (read-web).
+// Grounding citation URLs are kept on GeminiResearchResult for logs/telemetry but omitted from user-visible text.
 func FormatResearchResultForSlack(research GeminiResearchResult) string {
-	summary := strings.TrimSpace(research.Summary)
-	if summary == "" {
-		summary = "No summary returned from web research."
-	}
-	if len(research.Citations) > 0 {
-		summary = summary + "\n\nSources:\n- " + strings.Join(research.Citations, "\n- ")
-	}
-	return summary
+	return strings.TrimSpace(research.Summary)
 }
 
 // GeminiConversationResult is the outcome of a single conversational generateContent call.
@@ -41,20 +35,17 @@ type GeminiConversationResult struct {
 // Attempt chain: primary → without web search → recovery persona → minimal prompt.
 func runGeminiConversation(ctx context.Context, provider ProviderConfig, employeeID, userText, mode, memoryContext string) (GeminiConversationResult, error) {
 	p := provider
-
-	try := func(fn func() (GeminiConversationResult, error)) bool {
-		res, err := fn()
-		return err == nil && strings.TrimSpace(res.Text) != ""
-	}
-
-	var last GeminiConversationResult
 	var lastErr error
+	setErr := func(err error) {
+		if err != nil {
+			lastErr = err
+		}
+	}
 
 	if res, err := runGeminiConversationOnce(ctx, p, employeeID, userText, mode, memoryContext); err == nil && strings.TrimSpace(res.Text) != "" {
 		return res, nil
 	} else {
-		lastErr = err
-		last = res
+		setErr(err)
 	}
 
 	if p.EnableWebResearch {
@@ -62,8 +53,8 @@ func runGeminiConversation(ctx context.Context, provider ProviderConfig, employe
 		p2.EnableWebResearch = false
 		if res, err := runGeminiConversationOnce(ctx, p2, employeeID, userText, mode, memoryContext); err == nil && strings.TrimSpace(res.Text) != "" {
 			return res, nil
-		} else if err != nil {
-			lastErr = err
+		} else {
+			setErr(err)
 		}
 	}
 
@@ -71,20 +62,18 @@ func runGeminiConversation(ctx context.Context, provider ProviderConfig, employe
 	pRecover.EnableWebResearch = false
 	if res, err := runGeminiConversationRecovery(ctx, pRecover, employeeID, userText, mode, memoryContext); err == nil && strings.TrimSpace(res.Text) != "" {
 		return res, nil
-	} else if err != nil {
-		lastErr = err
+	} else {
+		setErr(err)
 	}
 
 	pMin := p
 	pMin.EnableWebResearch = false
 	if res, err := runGeminiConversationMinimal(ctx, pMin, employeeID, userText); err == nil && strings.TrimSpace(res.Text) != "" {
 		return res, nil
-	} else if err != nil {
-		lastErr = err
+	} else {
+		setErr(err)
 	}
 
-	_ = try
-	_ = last
 	if lastErr != nil {
 		return GeminiConversationResult{}, fmt.Errorf("gemini conversation exhausted retries: %w", lastErr)
 	}
@@ -218,13 +207,18 @@ func runGeminiConversationOnce(ctx context.Context, provider ProviderConfig, emp
 		systemInstruction += "\n\n" + conversationWebSearchPolicy()
 	}
 
-	maxTokens := 240
+	maxTokens := 768
 	temp := 0.55
 	if provider.EnableWebResearch {
-		// Room for grounded answers; Pro models may use internal reasoning budget too.
-		maxTokens = 1024
+		// Room for grounded answers + visible prose; Pro/thinking models can burn budget before emitting text.
+		maxTokens = 2048
 		// Lower variance when search tools are attached so personas behave more alike on factual turns.
 		temp = 0.35
+		if provider.MaxOutputTokensWithWeb > 0 {
+			maxTokens = provider.MaxOutputTokensWithWeb
+		}
+	} else if provider.MaxOutputTokens > 0 {
+		maxTokens = provider.MaxOutputTokens
 	}
 
 	requestBody := map[string]any{
@@ -281,7 +275,7 @@ For questions about current public events, news, geopolitics, or “give me an u
 
 Skip search only when the message is purely internal coordination or social (“how is everyone”) with no external-fact request—though if a single message mixes both, handle the external-fact part with search.
 
-Stay concise. Source links may be appended automatically when grounding is used. Web results can be wrong or noisy; avoid inventing specific dates or claims not reflected in retrieved material.
+Stay concise. Do not add a "Sources" section, bullet URLs, or citation links in your reply—summarize only. Web results can be wrong or noisy; avoid inventing specific dates or claims not reflected in retrieved material.
 `)
 }
 
@@ -315,7 +309,7 @@ func runGeminiResearch(ctx context.Context, provider ProviderConfig, query strin
 			map[string]any{
 				"parts": []any{
 					map[string]any{
-						"text": "Research the following query and respond with a concise summary plus source links.\n\nQuery: " + query,
+						"text": "Research the following query and respond with a concise summary. Do not include source links or a Sources section.\n\nQuery: " + query,
 					},
 				},
 			},
@@ -445,29 +439,6 @@ When the human’s ask is thin, ask what “done” means or what changed observ
 `)
 	default:
 		return "Reply as a concise, skeptical-friendly teammate: concrete, human, and oriented toward what could go wrong or stay ambiguous."
-	}
-}
-
-// defaultConversationFallback is only used when the model errors or returns no text after retries.
-// Keep copy honest so it is not mistaken for an intentional Joanne/Ross coaching reply.
-func defaultConversationFallback(employeeID, userText, mode string) string {
-	userText = strings.TrimSpace(userText)
-	if userText == "" {
-		userText = "your latest message"
-	}
-	switch normalizeID(employeeID) {
-	case "joanne":
-		if normalizeID(mode) == "task" {
-			return "Task mode: I couldn’t get a model reply just now—try again in a moment, or repeat the ask with any missing detail."
-		}
-		return "I couldn’t generate a reply from the model just now (after retries). Try again in a moment—your thread context should still be here."
-	case "ross":
-		if normalizeID(mode) == "task" {
-			return "Task mode: model didn’t return text—retry shortly or tighten the ask one notch so I can anchor execution."
-		}
-		return "Model returned nothing usable after retries—mind sending that again in a moment?"
-	default:
-		return "Couldn’t get a model completion just now; try again shortly."
 	}
 }
 

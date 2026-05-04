@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bimross/agent-factory/internal/handoffremote"
 	"github.com/bimross/agent-factory/internal/natsbus"
 	"github.com/bimross/agent-factory/internal/orchestratorevent"
 	"github.com/bimross/agent-factory/internal/runtime"
@@ -62,6 +64,10 @@ func main() {
 	publisher := newStatusPublisherFromEnv()
 
 	store := runtime.NewMemoryStore()
+	remoteForwarder, handoffStore, cleanupHandoff := newRemoteHandoffMaybe(appConfig)
+	if cleanupHandoff != nil {
+		defer cleanupHandoff()
+	}
 	engine := runtime.NewEngine(
 		publisher,
 		acceptAllHandoffBus{},
@@ -72,13 +78,14 @@ func main() {
 		providerConfig,
 		memoryBank,
 		threadContextFuncFromEnv(),
+		remoteForwarder,
 	)
 
 	switch appConfig.Mode {
 	case "demo":
 		runDemo(engine, store)
 	case "serve":
-		if err := runServe(appConfig, engine); err != nil {
+		if err := runServe(appConfig, engine, handoffStore); err != nil {
 			log.Fatalf("serve: %v", err)
 		}
 	default:
@@ -99,7 +106,7 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 	if err != nil {
 		log.Fatalf("start task: %v", err)
 	}
-	ownedTask, err = engine.ExecuteCapability(ownedTask, "create-issue")
+	ownedTask, err = engine.ExecuteCapability(context.Background(), ownedTask, "create-issue", nil)
 	if err != nil {
 		log.Fatalf("execute create-issue: %v", err)
 	}
@@ -119,7 +126,7 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 	if err != nil {
 		log.Fatalf("start task 2: %v", err)
 	}
-	ownedTaskTwo, err = engine.ExecuteCapability(ownedTaskTwo, "create-company")
+	ownedTaskTwo, err = engine.ExecuteCapability(context.Background(), ownedTaskTwo, "create-company", nil)
 	if err != nil {
 		log.Fatalf("execute create-company: %v", err)
 	}
@@ -129,7 +136,7 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 	}
 }
 
-func runServe(cfg runtime.AppConfig, engine *runtime.Engine) error {
+func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store) error {
 	log.Printf("agent-factory serve mode employee=%s nats=%s stream=%s",
 		cfg.EmployeeID,
 		cfg.NatsURL,
@@ -139,7 +146,7 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine) error {
 	defer cancel()
 
 	handler := func(ctx context.Context, payload []byte) error {
-		return handleOrchestratorPayload(ctx, cfg.EmployeeID, engine, payload)
+		return handleOrchestratorPayload(ctx, cfg.EmployeeID, engine, handoffStore, payload)
 	}
 
 	errCh := make(chan error, 1)
@@ -167,7 +174,7 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine) error {
 	}
 }
 
-func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *runtime.Engine, payload []byte) error {
+func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *runtime.Engine, handoffStore *handoffremote.Store, payload []byte) error {
 	var event orchestratorevent.EventV1
 	if err := json.Unmarshal(payload, &event); err != nil {
 		log.Printf("orchestrator payload parse failed: %v", err)
@@ -177,6 +184,14 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 	if target != normalizeID(employeeID) {
 		log.Printf("orchestrator payload target mismatch expected=%s got=%s", employeeID, target)
 		return nil
+	}
+
+	if event.Continuation != nil && strings.TrimSpace(event.Continuation.HandoffID) != "" {
+		if handoffStore == nil {
+			log.Printf("handoff continuation received but REDIS_URL is not configured; acking")
+			return nil
+		}
+		return handleHandoffContinuation(ctx, employeeID, engine, handoffStore, event)
 	}
 
 	capabilityID := strings.TrimSpace(event.Decision.ToolID)
@@ -206,7 +221,11 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 		return fmt.Errorf("start task %s: %w", taskID, err)
 	}
 	if capabilityID != "" {
-		if _, err := engine.ExecuteCapability(ownedTask, capabilityID); err != nil {
+		if _, err := engine.ExecuteCapability(ctx, ownedTask, capabilityID, &event); err != nil {
+			if errors.Is(err, runtime.ErrHandoffDispatched) {
+				log.Printf("remote handoff dispatched task=%s tool=%s trace=%s", taskID, normalizeID(capabilityID), traceID)
+				return nil
+			}
 			return fmt.Errorf("execute capability %s for task %s: %w", capabilityID, taskID, err)
 		}
 		log.Printf("processed orchestrator event employee=%s task=%s tool=%s trace=%s kind=%s",
@@ -216,7 +235,6 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 			traceID,
 			kind,
 		)
-		_ = ctx
 		return nil
 	}
 	if _, err := engine.ExecuteConversation(ownedTask); err != nil {
@@ -225,6 +243,103 @@ func handleOrchestratorPayload(ctx context.Context, employeeID string, engine *r
 	log.Printf("processed orchestrator conversation employee=%s task=%s trace=%s kind=%s",
 		employeeID, taskID, traceID, kind)
 	_ = ctx
+	return nil
+}
+
+func newRemoteHandoffMaybe(cfg runtime.AppConfig) (runtime.RemoteHandoffForwarder, *handoffremote.Store, func()) {
+	redisURL := strings.TrimSpace(os.Getenv("REDIS_URL"))
+	if redisURL == "" {
+		return nil, nil, nil
+	}
+	ttlSec := 86400
+	if v := strings.TrimSpace(os.Getenv("HANDOFF_REDIS_TTL_SEC")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ttlSec = n
+		}
+	}
+	prefix := strings.TrimSpace(os.Getenv("HANDOFF_REDIS_KEY_PREFIX"))
+	store, err := handoffremote.NewStore(redisURL, prefix, time.Duration(ttlSec)*time.Second)
+	if err != nil {
+		log.Printf("remote handoff disabled: redis: %v", err)
+		return nil, nil, nil
+	}
+	fwd, err := handoffremote.NewForwarder(store, cfg.NatsURL, cfg.NatsStream)
+	if err != nil {
+		_ = store.Close()
+		log.Printf("remote handoff disabled: nats: %v", err)
+		return nil, nil, nil
+	}
+	log.Printf("remote handoff enabled (Redis + JetStream to peer subjects)")
+	return fwd, store, func() {
+		fwd.Close()
+		_ = store.Close()
+	}
+}
+
+func handleHandoffContinuation(ctx context.Context, employeeID string, engine *runtime.Engine, store *handoffremote.Store, event orchestratorevent.EventV1) error {
+	hid := strings.TrimSpace(event.Continuation.HandoffID)
+	rec, err := store.Get(ctx, hid)
+	if err != nil {
+		return fmt.Errorf("handoff redis get: %w", err)
+	}
+	if rec == nil {
+		log.Printf("handoff continuation: unknown id=%s (expired or claimed)", hid)
+		return nil
+	}
+	if normalizeID(rec.ToEmployee) != normalizeID(employeeID) {
+		log.Printf("handoff continuation: employee mismatch record=%s consumer=%s", rec.ToEmployee, employeeID)
+		return nil
+	}
+	capabilityID := normalizeID(strings.TrimSpace(firstNonEmpty(event.Decision.ToolID, rec.CapabilityID)))
+	if capabilityID == "" {
+		log.Printf("handoff continuation: missing capability handoff_id=%s", hid)
+		return nil
+	}
+	if capabilityID != normalizeID(rec.CapabilityID) {
+		log.Printf("handoff continuation: capability mismatch event=%s record=%s", capabilityID, rec.CapabilityID)
+		return nil
+	}
+
+	merge := event
+	merge.Message = rec.Message
+	merge.Decision = rec.Decision
+	merge.TraceID = firstNonEmpty(rec.TraceID, event.TraceID)
+	merge.RunID = firstNonEmpty(rec.RunID, event.RunID)
+	merge.SlackEventID = firstNonEmpty(rec.SlackEventID, event.SlackEventID)
+	merge.SchemaVersion = firstNonEmpty(rec.EventSchemaVersion, event.SchemaVersion)
+	merge.TargetEmployee = employeeID
+	merge.Continuation = nil
+
+	taskID := deriveTaskID(merge)
+	traceID := firstNonEmpty(merge.EffectiveTraceID(), taskID)
+	anchorTS := strings.TrimSpace(firstNonEmpty(merge.Message.ThreadTS, merge.Message.MessageTS))
+	threadAnchor := strings.TrimSpace(merge.Message.ChannelID)
+	if threadAnchor != "" && anchorTS != "" {
+		threadAnchor += ":" + anchorTS
+	}
+
+	task := runtime.Task{
+		ID:           taskID,
+		TraceID:      traceID,
+		ThreadAnchor: threadAnchor,
+		RequestText:  strings.TrimSpace(merge.Message.Text),
+		ChannelID:    strings.TrimSpace(merge.Message.ChannelID),
+		ThreadTS:     strings.TrimSpace(merge.Message.ThreadTS),
+		MessageTS:    strings.TrimSpace(merge.Message.MessageTS),
+		HumanUserID:  strings.TrimSpace(merge.Message.UserID),
+		Mode:         firstNonEmpty(modeFromDecision(merge), "conversation"),
+	}
+	ownedTask, err := engine.StartTask(task, employeeID)
+	if err != nil {
+		return fmt.Errorf("handoff start task %s: %w", taskID, err)
+	}
+	if _, err := engine.ExecuteCapability(ctx, ownedTask, capabilityID, nil); err != nil {
+		return fmt.Errorf("handoff execute %s: %w", capabilityID, err)
+	}
+	if err := store.Delete(ctx, hid); err != nil {
+		log.Printf("handoff continuation: redis delete %s: %v", hid, err)
+	}
+	log.Printf("handoff continuation done handoff_id=%s task=%s capability=%s employee=%s", hid, taskID, capabilityID, employeeID)
 	return nil
 }
 
@@ -271,25 +386,78 @@ func firstNonEmpty(values ...string) string {
 }
 
 type statusPublisher struct {
-	slackClient *slack.Client
-	waitEmoji   string
-	reacted     sync.Map // task ID -> struct{}; we added a waiting reaction for this task
+	// byEmployee maps lowercase employee id → Slack API client. Used for thread posts so the
+	// message matches task.OwnerEmployeeID (e.g. Ross speaks after handoff even when NATS landed on Joanne).
+	byEmployee map[string]*slack.Client
+	// processEmp is EMPLOYEE_ID for this process — used for waiting reactions (same bot must add/remove).
+	processEmp string
+	waitEmoji  string
+	reacted    sync.Map // task ID -> struct{}; we added a waiting reaction for this task
 }
 
 func newStatusPublisherFromEnv() runtime.StatusPublisher {
-	botToken := strings.TrimSpace(os.Getenv("SLACK_BOT_TOKEN"))
-	if botToken == "" {
-		log.Printf("status publisher: SLACK_BOT_TOKEN missing, Slack posting disabled")
-		return &statusPublisher{}
-	}
+	by := slackBotClientsFromEnv()
 	emoji := normalizeWaitingReactionName(os.Getenv("SLACK_WAITING_REACTION"))
 	if emoji == "" {
 		emoji = "hourglass_flowing_sand"
 	}
-	return &statusPublisher{
-		slackClient: slack.New(botToken),
-		waitEmoji:   emoji,
+	processEmp := strings.ToLower(strings.TrimSpace(os.Getenv("EMPLOYEE_ID")))
+	if len(by) == 0 {
+		log.Printf("status publisher: no Slack bot tokens (set SLACK_BOT_TOKEN + EMPLOYEE_ID or JOANNE_SLACK_BOT_TOKEN / ROSS_SLACK_BOT_TOKEN); Slack disabled")
+		return &statusPublisher{waitEmoji: emoji}
 	}
+	return &statusPublisher{
+		byEmployee: by,
+		processEmp: processEmp,
+		waitEmoji:  emoji,
+	}
+}
+
+// slackBotClientsFromEnv loads per-employee bot tokens so one runtime can post as another employee after handoff.
+func slackBotClientsFromEnv() map[string]*slack.Client {
+	m := make(map[string]*slack.Client)
+	defTok := strings.TrimSpace(os.Getenv("SLACK_BOT_TOKEN"))
+	defEmp := strings.ToLower(strings.TrimSpace(os.Getenv("EMPLOYEE_ID")))
+	if defTok != "" && defEmp != "" {
+		m[defEmp] = slack.New(defTok)
+	}
+	for _, emp := range []string{"joanne", "ross", "alex", "tim", "garth"} {
+		key := strings.ToUpper(emp) + "_SLACK_BOT_TOKEN"
+		if tok := strings.TrimSpace(os.Getenv(key)); tok != "" {
+			m[emp] = slack.New(tok)
+		}
+	}
+	return m
+}
+
+func (s *statusPublisher) processClient() *slack.Client {
+	if s == nil || s.byEmployee == nil {
+		return nil
+	}
+	if c := s.byEmployee[s.processEmp]; c != nil {
+		return c
+	}
+	for _, c := range s.byEmployee {
+		if c != nil {
+			return c
+		}
+	}
+	return nil
+}
+
+// clientForMessageOwner chooses which bot posts chat — follows task ownership after handoff.
+func (s *statusPublisher) clientForMessageOwner(ownerEmployeeID string) *slack.Client {
+	if s == nil || s.byEmployee == nil {
+		return nil
+	}
+	id := strings.ToLower(strings.TrimSpace(ownerEmployeeID))
+	if id != "" {
+		if c := s.byEmployee[id]; c != nil {
+			return c
+		}
+	}
+	log.Printf("status publisher: no Slack client for owner=%s; falling back to process bot", ownerEmployeeID)
+	return s.processClient()
 }
 
 func normalizeWaitingReactionName(raw string) string {
@@ -352,8 +520,44 @@ func (s *statusPublisher) PublishUpdate(task runtime.Task, message string) error
 	return nil
 }
 
+func (s *statusPublisher) PublishThreadNotice(task runtime.Task, text string) error {
+	log.Printf("thread_notice task=%s owner=%s text=%s", task.ID, task.OwnerEmployeeID, text)
+	api := s.clientForMessageOwner(task.OwnerEmployeeID)
+	if api == nil {
+		return nil
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	channelID := strings.TrimSpace(task.ChannelID)
+	if channelID == "" {
+		log.Printf("status publisher: skip thread notice (missing channel) task=%s", task.ID)
+		return nil
+	}
+	threadTS := strings.TrimSpace(task.ThreadTS)
+	if threadTS == "" {
+		threadTS = strings.TrimSpace(task.MessageTS)
+	}
+	blocks, fallback := slackrender.AgentReplyBlocks(text)
+	opts := []slack.MsgOption{
+		slack.MsgOptionText(fallback, false),
+	}
+	if len(blocks) > 0 {
+		opts = append(opts, slack.MsgOptionBlocks(blocks...))
+	}
+	if threadTS != "" {
+		opts = append(opts, slack.MsgOptionTS(threadTS))
+	}
+	if _, _, err := api.PostMessage(channelID, opts...); err != nil {
+		return fmt.Errorf("post Slack thread notice: %w", err)
+	}
+	return nil
+}
+
 func (s *statusPublisher) ensureWaitingReaction(task runtime.Task) {
-	if s.slackClient == nil || s.waitEmoji == "" || s.waitEmoji == "-" {
+	api := s.processClient()
+	if api == nil || s.waitEmoji == "" || s.waitEmoji == "-" {
 		return
 	}
 	ch := strings.TrimSpace(task.ChannelID)
@@ -366,14 +570,15 @@ func (s *statusPublisher) ensureWaitingReaction(task runtime.Task) {
 	}
 	ref := slack.NewRefToMessage(ch, ts)
 	ctx := context.Background()
-	if err := s.slackClient.AddReactionContext(ctx, s.waitEmoji, ref); err != nil {
+	if err := api.AddReactionContext(ctx, s.waitEmoji, ref); err != nil {
 		log.Printf("waiting reaction add emoji=%s task=%s: %v", s.waitEmoji, task.ID, err)
 		s.reacted.Delete(task.ID)
 	}
 }
 
 func (s *statusPublisher) clearWaitingReaction(task runtime.Task) {
-	if s.slackClient == nil || s.waitEmoji == "" || s.waitEmoji == "-" {
+	api := s.processClient()
+	if api == nil || s.waitEmoji == "" || s.waitEmoji == "-" {
 		return
 	}
 	if _, ok := s.reacted.LoadAndDelete(task.ID); !ok {
@@ -386,7 +591,7 @@ func (s *statusPublisher) clearWaitingReaction(task runtime.Task) {
 	}
 	ref := slack.NewRefToMessage(ch, ts)
 	ctx := context.Background()
-	if err := s.slackClient.RemoveReactionContext(ctx, s.waitEmoji, ref); err != nil {
+	if err := api.RemoveReactionContext(ctx, s.waitEmoji, ref); err != nil {
 		log.Printf("waiting reaction remove emoji=%s task=%s: %v", s.waitEmoji, task.ID, err)
 	}
 }
@@ -399,7 +604,8 @@ func (s *statusPublisher) ClearInboundReaction(task runtime.Task) error {
 func (s *statusPublisher) PublishFinal(task runtime.Task, payload runtime.RenderPayload) error {
 	log.Printf("final task=%s owner=%s text=%s", task.ID, task.OwnerEmployeeID, payload.FallbackText)
 	s.clearWaitingReaction(task)
-	if s.slackClient == nil {
+	api := s.clientForMessageOwner(task.OwnerEmployeeID)
+	if api == nil {
 		return nil
 	}
 	text := strings.TrimSpace(payload.FallbackText)
@@ -426,7 +632,7 @@ func (s *statusPublisher) PublishFinal(task runtime.Task, payload runtime.Render
 	if threadTS != "" {
 		opts = append(opts, slack.MsgOptionTS(threadTS))
 	}
-	if _, _, err := s.slackClient.PostMessage(channelID, opts...); err != nil {
+	if _, _, err := api.PostMessage(channelID, opts...); err != nil {
 		return fmt.Errorf("post Slack final message: %w", err)
 	}
 	return nil

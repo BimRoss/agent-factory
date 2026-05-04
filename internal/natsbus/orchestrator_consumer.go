@@ -88,7 +88,7 @@ func runConsumerSession(ctx context.Context, cfg ConsumerConfig, handle Orchestr
 	if stream == "" {
 		stream = "SLACK_WORK"
 	}
-	if err := ensureStream(js, stream); err != nil {
+	if err := EnsureJetStreamStream(js, stream); err != nil {
 		return err
 	}
 
@@ -169,7 +169,8 @@ func runConsumerSession(ctx context.Context, cfg ConsumerConfig, handle Orchestr
 	}
 }
 
-func ensureStream(js nats.JetStreamContext, name string) error {
+// EnsureJetStreamStream creates the JetStream stream if missing (subjects slack.work.*.events).
+func EnsureJetStreamStream(js nats.JetStreamContext, name string) error {
 	if _, err := js.StreamInfo(name); err == nil {
 		return nil
 	} else if !errors.Is(err, nats.ErrStreamNotFound) {
