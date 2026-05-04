@@ -403,7 +403,7 @@ func newStatusPublisherFromEnv() runtime.StatusPublisher {
 	}
 	processEmp := strings.ToLower(strings.TrimSpace(os.Getenv("EMPLOYEE_ID")))
 	if len(by) == 0 {
-		log.Printf("status publisher: no Slack bot tokens (set SLACK_BOT_TOKEN + EMPLOYEE_ID or JOANNE_SLACK_BOT_TOKEN / ROSS_SLACK_BOT_TOKEN); Slack disabled")
+		log.Printf("status publisher: no Slack bot tokens (set SLACK_BOT_TOKEN + EMPLOYEE_ID or <EMPLOYEE>_SLACK_BOT_TOKEN); Slack disabled")
 		return &statusPublisher{waitEmoji: emoji}
 	}
 	return &statusPublisher{
@@ -421,7 +421,7 @@ func slackBotClientsFromEnv() map[string]*slack.Client {
 	if defTok != "" && defEmp != "" {
 		m[defEmp] = slack.New(defTok)
 	}
-	for _, emp := range []string{"joanne", "ross", "alex", "tim", "garth"} {
+	for _, emp := range []string{"joanne", "ross", "alex", "tim", "garth", "anna"} {
 		key := strings.ToUpper(emp) + "_SLACK_BOT_TOKEN"
 		if tok := strings.TrimSpace(os.Getenv(key)); tok != "" {
 			m[emp] = slack.New(tok)

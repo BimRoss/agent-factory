@@ -133,6 +133,178 @@ services:
         source: ../skill-factory
         target: /workspace/skill-factory
 
+  agent-alex:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - nats
+      - redis
+    environment:
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: "alex"
+      NATS_DURABLE_NAME: ${ALEX_NATS_DURABLE_NAME:-agent-factory-alex}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SLACK_BOT_TOKEN: ${ALEX_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${ALEX_SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-BimRoss}
+      GITHUB_REPO: ${GITHUB_REPO:-create-issue}
+      ALEX_GITHUB_TOKEN: ${ALEX_GITHUB_TOKEN:-}
+      ALEX_GITHUB_OWNER: ${ALEX_GITHUB_OWNER:-}
+      ALEX_GITHUB_REPO: ${ALEX_GITHUB_REPO:-}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  agent-garth:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - nats
+      - redis
+    environment:
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: "garth"
+      NATS_DURABLE_NAME: ${GARTH_NATS_DURABLE_NAME:-agent-factory-garth}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SLACK_BOT_TOKEN: ${GARTH_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${GARTH_SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-BimRoss}
+      GITHUB_REPO: ${GITHUB_REPO:-create-issue}
+      GARTH_GITHUB_TOKEN: ${GARTH_GITHUB_TOKEN:-}
+      GARTH_GITHUB_OWNER: ${GARTH_GITHUB_OWNER:-}
+      GARTH_GITHUB_REPO: ${GARTH_GITHUB_REPO:-}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  agent-tim:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - nats
+      - redis
+    environment:
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: "tim"
+      NATS_DURABLE_NAME: ${TIM_NATS_DURABLE_NAME:-agent-factory-tim}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SLACK_BOT_TOKEN: ${TIM_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${TIM_SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-BimRoss}
+      GITHUB_REPO: ${GITHUB_REPO:-create-issue}
+      TIM_GITHUB_TOKEN: ${TIM_GITHUB_TOKEN:-}
+      TIM_GITHUB_OWNER: ${TIM_GITHUB_OWNER:-}
+      TIM_GITHUB_REPO: ${TIM_GITHUB_REPO:-}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  agent-anna:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - nats
+      - redis
+    environment:
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: "anna"
+      NATS_DURABLE_NAME: ${ANNA_NATS_DURABLE_NAME:-agent-factory-anna}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SLACK_BOT_TOKEN: ${ANNA_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${ANNA_SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_OWNER: ${GITHUB_OWNER:-BimRoss}
+      GITHUB_REPO: ${GITHUB_REPO:-create-issue}
+      ANNA_GITHUB_TOKEN: ${ANNA_GITHUB_TOKEN:-}
+      ANNA_GITHUB_OWNER: ${ANNA_GITHUB_OWNER:-}
+      ANNA_GITHUB_REPO: ${ANNA_GITHUB_REPO:-}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
   skill-factory:
     profiles: ["local"]
     build:

@@ -51,7 +51,7 @@ Keep your existing `.env.dev` and `.env.prod` workflow, but use examples as the 
 Both include:
 
 - orchestrator app credentials (`ORCHESTRATOR_SLACK_*`)
-- per-employee credentials (`JOANNE_SLACK_*`, `ROSS_SLACK_*`)
+- per-employee credentials (`<EMPLOYEE>_SLACK_*` for each running agent, e.g. `JOANNE_SLACK_*`, `ROSS_SLACK_*`, `ALEX_SLACK_*`, …)
 - shared runtime plumbing (`NATS_URL`, `REDIS_URL`, `BACKEND_INTERNAL_SERVICE_TOKEN`)
 - Gemini provider defaults (`GEMINI_*`)
 
@@ -60,7 +60,7 @@ Both include:
 `docker-compose.core.yml` wires:
 
 - `slack-orchestrator` (ingress + dispatch only, Tier-1 tool intent disabled)
-- `agent-factory` employees (`agent-joanne`, `agent-ross`)
+- `agent-factory` employees (`agent-joanne`, `agent-ross`, `agent-alex`, `agent-garth`, `agent-tim`, `agent-anna`)
 - `skill-factory` validator service
 - `shared-contracts` validator service
 - local `nats` dependency
