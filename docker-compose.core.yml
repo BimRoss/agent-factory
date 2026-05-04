@@ -1,0 +1,149 @@
+services:
+  nats:
+    profiles: ["local"]
+    image: nats:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+
+  slack-orchestrator:
+    profiles: ["local"]
+    build:
+      context: ../slack-orchestrator
+      dockerfile: Dockerfile.dev
+    restart: unless-stopped
+    depends_on:
+      - nats
+    ports:
+      - "${ORCHESTRATOR_PORT:-8080}:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      SLACK_BOT_TOKEN: ${ORCHESTRATOR_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${ORCHESTRATOR_SLACK_APP_TOKEN}
+      MULTIAGENT_BOT_USER_IDS: ${MULTIAGENT_BOT_USER_IDS}
+      ORCHESTRATOR_NATS_URL: ${ORCHESTRATOR_NATS_URL:-nats://nats:4222}
+      ORCHESTRATOR_DISPATCH_ENABLED: "true"
+      ORCHESTRATOR_TOOL_INTENT_ROUTING_ENABLED: ${ORCHESTRATOR_TOOL_INTENT_ROUTING_ENABLED:-true}
+      ORCHESTRATOR_TERMS_REDIS_URL: ""
+    volumes:
+      - type: bind
+        source: ../slack-orchestrator
+        target: /src
+      - slack_orchestrator_gomod:/go/pkg/mod
+      - slack_orchestrator_gocache:/root/.cache/go-build
+
+  agent-joanne:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - nats
+    environment:
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: "joanne"
+      NATS_DURABLE_NAME: ${JOANNE_NATS_DURABLE_NAME:-agent-factory-joanne}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      REDIS_URL: ${REDIS_URL}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SLACK_BOT_TOKEN: ${JOANNE_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${JOANNE_SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  agent-ross:
+    profiles: ["local"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - nats
+    environment:
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: "ross"
+      NATS_DURABLE_NAME: ${ROSS_NATS_DURABLE_NAME:-agent-factory-ross}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER}
+      GEMINI_MODEL: ${GEMINI_MODEL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH}
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      REDIS_URL: ${REDIS_URL}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SLACK_BOT_TOKEN: ${ROSS_SLACK_BOT_TOKEN}
+      SLACK_APP_TOKEN: ${ROSS_SLACK_APP_TOKEN}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  skill-factory:
+    profiles: ["local"]
+    build:
+      context: ../skill-factory
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          skill-factory-validate /workspace/skill-factory/skills/v1/*-*.md
+          sleep 300
+        done
+    volumes:
+      - type: bind
+        source: ../skill-factory
+        target: /workspace/skill-factory
+
+  shared-contracts:
+    profiles: ["local"]
+    build:
+      context: ../shared-contracts
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          cd /workspace/shared-contracts && shared-contracts-validate
+          sleep 300
+        done
+    volumes:
+      - type: bind
+        source: ../shared-contracts
+        target: /workspace/shared-contracts
+
+volumes:
+  slack_orchestrator_gomod:
+  slack_orchestrator_gocache:

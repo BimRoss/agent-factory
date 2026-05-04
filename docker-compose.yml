@@ -1,0 +1,45 @@
+services:
+  agent-factory:
+    profiles: ["local", "integration"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
+      SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
+      SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
+      MEMORY_BANK_FILE: ${MEMORY_BANK_FILE:-/workspace/shared-contracts/memory-bank.v1.json}
+      AGENT_FACTORY_MODE: ${AGENT_FACTORY_MODE:-serve}
+      EMPLOYEE_ID: ${EMPLOYEE_ID:-joanne}
+      INFERENCE_PROVIDER: ${INFERENCE_PROVIDER:-gemini}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-pro}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      BYOK_GEMINI_API_KEY: ${BYOK_GEMINI_API_KEY:-}
+      GEMINI_ENABLE_WEB_RESEARCH: ${GEMINI_ENABLE_WEB_RESEARCH:-true}
+      ORCHESTRATOR_NATS_URL: ${ORCHESTRATOR_NATS_URL:-nats://localhost:4222}
+      MAKEACOMPANY_BACKEND_BASE_URL: ${MAKEACOMPANY_BACKEND_BASE_URL:-http://localhost:8081}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+      NATS_URL: ${NATS_URL:-nats://localhost:4222}
+      NATS_STREAM: ${NATS_STREAM:-SLACK_WORK}
+      NATS_DURABLE_NAME: ${NATS_DURABLE_NAME:-agent-factory-dev}
+      NATS_FETCH_BATCH: ${NATS_FETCH_BATCH:-8}
+      NATS_FETCH_MAX_WAIT_MS: ${NATS_FETCH_MAX_WAIT_MS:-5000}
+      ORCHESTRATOR_INGRESS_WORKERS: ${ORCHESTRATOR_INGRESS_WORKERS:-4}
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379/0}
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN:-}
+    volumes:
+      - ../shared-contracts:/workspace/shared-contracts:ro
+      - ../skill-factory:/workspace/skill-factory:ro
+    restart: unless-stopped
+
+  skill-factory-validate:
+    profiles: ["integration"]
+    build:
+      context: ../skill-factory
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    command: ["/bin/sh", "-lc", "go run ./cmd/skill-factory-validate skills/v1/*-*.md"]
+    volumes:
+      - ../skill-factory:/workspace:ro

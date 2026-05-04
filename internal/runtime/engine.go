@@ -1,0 +1,275 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// ThreadContextFunc optionally supplies Slack thread history (e.g. from
+// conversations.replies) to conversation mode. When nil, only the memory bank
+// and the single user turn are used.
+type ThreadContextFunc func(ctx context.Context, task Task) string
+
+type Engine struct {
+	publisher     StatusPublisher
+	handoff       HandoffBus
+	tasks         TaskStore
+	traces        TraceStore
+	registry      Registry
+	toolSpecs     map[string]ToolSpec
+	provider      ProviderConfig
+	memory        *MemoryBank
+	threadContext ThreadContextFunc
+}
+
+func NewEngine(publisher StatusPublisher, handoff HandoffBus, tasks TaskStore, traces TraceStore, registry Registry, toolSpecs map[string]ToolSpec, provider ProviderConfig, memory *MemoryBank, threadContext ThreadContextFunc) *Engine {
+	if toolSpecs == nil {
+		toolSpecs = map[string]ToolSpec{}
+	}
+	return &Engine{
+		publisher:     publisher,
+		handoff:       handoff,
+		tasks:         tasks,
+		traces:        traces,
+		registry:      registry,
+		toolSpecs:     toolSpecs,
+		provider:      provider,
+		memory:        memory,
+		threadContext: threadContext,
+	}
+}
+
+func (e *Engine) StartTask(task Task, ownerEmployeeID string) (Task, error) {
+	now := time.Now().UTC()
+	task.OwnerEmployeeID = ownerEmployeeID
+	task.LastState = StatePlanning
+	task.CreatedAt = now
+	task.UpdatedAt = now
+	if err := e.tasks.SaveTask(task); err != nil {
+		return task, err
+	}
+	if err := e.publisher.PublishStatus(LifecycleEvent{
+		TaskID:       task.ID,
+		ThreadAnchor: task.ThreadAnchor,
+		TraceID:      task.TraceID,
+		EmployeeID:   ownerEmployeeID,
+		StateFrom:    StateReceived,
+		StateTo:      StatePlanning,
+		Timestamp:    now,
+	}); err != nil {
+		return task, err
+	}
+	return task, nil
+}
+
+func (e *Engine) DelegateIfMissingSkill(task Task, toEmployeeID, missingSkillID string) (Task, error) {
+	requestedAt := time.Now().UTC()
+	requestEntry := TraceEntry{
+		Sequence:       len(e.traces.ListTrace(task.ID)) + 1,
+		EmployeeID:     task.OwnerEmployeeID,
+		SkillID:        missingSkillID,
+		Status:         "handoff_requested",
+		Note:           fmt.Sprintf("requested handoff to %s", toEmployeeID),
+		RenderOutputID: "",
+		Timestamp:      requestedAt,
+	}
+	if err := e.traces.AppendTrace(task.ID, requestEntry); err != nil {
+		return task, err
+	}
+
+	req := HandoffRequest{
+		Task:            task,
+		FromEmployeeID:  task.OwnerEmployeeID,
+		ToEmployeeID:    toEmployeeID,
+		Reason:          fmt.Sprintf("owner missing skill %s", missingSkillID),
+		RequiredSkillID: missingSkillID,
+	}
+	updatedTask, err := TransferOwnership(task, req, e.handoff, e.publisher)
+	if err != nil {
+		return task, err
+	}
+	updatedTask.LastState = StateHandoffAccepted
+	updatedTask.UpdatedAt = time.Now().UTC()
+	acceptedEntry := TraceEntry{
+		Sequence:       len(e.traces.ListTrace(updatedTask.ID)) + 1,
+		EmployeeID:     updatedTask.OwnerEmployeeID,
+		SkillID:        missingSkillID,
+		Status:         "handoff_accepted",
+		Note:           fmt.Sprintf("ownership transferred from %s", req.FromEmployeeID),
+		RenderOutputID: "",
+		Timestamp:      updatedTask.UpdatedAt,
+	}
+	if err := e.traces.AppendTrace(updatedTask.ID, acceptedEntry); err != nil {
+		return task, err
+	}
+	if err := e.tasks.SaveTask(updatedTask); err != nil {
+		return task, err
+	}
+	if err := e.publisher.PublishStatus(LifecycleEvent{
+		TaskID:           updatedTask.ID,
+		ThreadAnchor:     updatedTask.ThreadAnchor,
+		TraceID:          updatedTask.TraceID,
+		EmployeeID:       updatedTask.OwnerEmployeeID,
+		StateFrom:        StateWaitingHandoff,
+		StateTo:          StateHandoffAccepted,
+		TransitionReason: fmt.Sprintf("handoff accepted for capability %s", missingSkillID),
+		Timestamp:        updatedTask.UpdatedAt,
+	}); err != nil {
+		return task, err
+	}
+	return updatedTask, nil
+}
+
+func (e *Engine) ExecuteCapability(task Task, capabilityID string) (Task, error) {
+	capabilityID = normalizeID(capabilityID)
+	if capabilityID == "" {
+		return task, fmt.Errorf("capability id is required")
+	}
+	if task.ID == "" {
+		return task, fmt.Errorf("task id is required")
+	}
+
+	if !e.registry.EmployeeHasCapability(task.OwnerEmployeeID, capabilityID) {
+		toEmployeeID, ok := e.registry.FindEmployeeForCapability(capabilityID, task.OwnerEmployeeID)
+		if !ok || toEmployeeID == "" {
+			return task, fmt.Errorf("no employee available for capability %s", capabilityID)
+		}
+		prevState := task.LastState
+		task.LastState = StateWaitingHandoff
+		if err := e.tasks.SaveTask(task); err != nil {
+			return task, err
+		}
+		if err := e.publisher.PublishStatus(LifecycleEvent{
+			TaskID:           task.ID,
+			ThreadAnchor:     task.ThreadAnchor,
+			TraceID:          task.TraceID,
+			EmployeeID:       task.OwnerEmployeeID,
+			StateFrom:        prevState,
+			StateTo:          StateWaitingHandoff,
+			TransitionReason: fmt.Sprintf("owner missing capability %s", capabilityID),
+			Timestamp:        time.Now().UTC(),
+		}); err != nil {
+			return task, err
+		}
+		var err error
+		task, err = e.DelegateIfMissingSkill(task, toEmployeeID, capabilityID)
+		if err != nil {
+			return task, err
+		}
+	}
+
+	startedAt := time.Now().UTC()
+	prevState := task.LastState
+	task.LastState = StateRunning
+	task.UpdatedAt = startedAt
+	if err := e.tasks.SaveTask(task); err != nil {
+		return task, err
+	}
+	if err := e.publisher.PublishStatus(LifecycleEvent{
+		TaskID:           task.ID,
+		ThreadAnchor:     task.ThreadAnchor,
+		TraceID:          task.TraceID,
+		EmployeeID:       task.OwnerEmployeeID,
+		StateFrom:        prevState,
+		StateTo:          StateRunning,
+		TransitionReason: fmt.Sprintf("executing capability %s", capabilityID),
+		Timestamp:        startedAt,
+	}); err != nil {
+		return task, err
+	}
+
+	startEntry := TraceEntry{
+		Sequence:       len(e.traces.ListTrace(task.ID)) + 1,
+		EmployeeID:     task.OwnerEmployeeID,
+		SkillID:        capabilityID,
+		Status:         "started",
+		Note:           "execution started",
+		RenderOutputID: "",
+		Timestamp:      startedAt,
+	}
+	if err := e.traces.AppendTrace(task.ID, startEntry); err != nil {
+		return task, err
+	}
+	plan := capabilityExecutionPlan(task, capabilityID, e.toolSpecs)
+	if capabilityID == "read-web" {
+		query := strings.TrimSpace(task.RequestText)
+		if query == "" {
+			query = "Latest relevant updates"
+		}
+		if err := e.publisher.PublishUpdate(task, "Running Gemini research query..."); err != nil {
+			return task, err
+		}
+		research, err := runGeminiResearch(context.Background(), e.provider, query)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		summary := FormatResearchResultForSlack(research)
+		plan.FinalPayload = RenderPayload{
+			OutputID:     fmt.Sprintf("%s-read-web", task.ID),
+			FallbackText: summary,
+			FinalSummary: "read-web research completed",
+			Transport:    "slack",
+		}
+	}
+	for _, update := range plan.ProgressUpdates {
+		if err := e.publisher.PublishUpdate(task, update); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+	}
+
+	finishedAt := time.Now().UTC()
+	finalPayload := plan.FinalPayload
+	if finalPayload.OutputID == "" {
+		finalPayload.OutputID = fmt.Sprintf("%s-%s", task.ID, capabilityID)
+	}
+	if finalPayload.FallbackText == "" {
+		finalPayload.FallbackText = fmt.Sprintf("Completed %s via %s.", capabilityID, task.OwnerEmployeeID)
+	}
+	if finalPayload.FinalSummary == "" {
+		finalPayload.FinalSummary = fmt.Sprintf("Capability %s completed", capabilityID)
+	}
+	if finalPayload.Transport == "" {
+		finalPayload.Transport = "slack"
+	}
+	completedEntry := TraceEntry{
+		Sequence:       len(e.traces.ListTrace(task.ID)) + 1,
+		EmployeeID:     task.OwnerEmployeeID,
+		SkillID:        capabilityID,
+		Status:         "completed",
+		Note:           finalPayload.FinalSummary,
+		RenderOutputID: finalPayload.OutputID,
+		Timestamp:      finishedAt,
+	}
+	if err := e.traces.AppendTrace(task.ID, completedEntry); err != nil {
+		_ = e.publisher.ClearInboundReaction(task)
+		return task, err
+	}
+
+	task.LastState = StateCompleted
+	task.UpdatedAt = finishedAt
+	if err := e.tasks.SaveTask(task); err != nil {
+		_ = e.publisher.ClearInboundReaction(task)
+		return task, err
+	}
+	if err := e.publisher.PublishStatus(LifecycleEvent{
+		TaskID:           task.ID,
+		ThreadAnchor:     task.ThreadAnchor,
+		TraceID:          task.TraceID,
+		EmployeeID:       task.OwnerEmployeeID,
+		StateFrom:        StateRunning,
+		StateTo:          StateCompleted,
+		TransitionReason: fmt.Sprintf("completed capability %s", capabilityID),
+		Timestamp:        finishedAt,
+	}); err != nil {
+		_ = e.publisher.ClearInboundReaction(task)
+		return task, err
+	}
+	if err := e.publisher.PublishFinal(task, finalPayload); err != nil {
+		return task, err
+	}
+	return task, nil
+}
