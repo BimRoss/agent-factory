@@ -61,6 +61,7 @@ services:
       REQUIRE_CAPABILITY_CATALOG_READ_TOKEN: ${REQUIRE_CAPABILITY_CATALOG_READ_TOKEN:-false}
       COMPANY_CHANNELS_REDIS_KEY: ${COMPANY_CHANNELS_REDIS_KEY:-agent-factory:company_channels}
       CAPABILITY_ROUTING_EVENTS_REDIS_KEY: ${CAPABILITY_ROUTING_EVENTS_REDIS_KEY:-agent-factory:capability_routing_events}
+      AGENT_FACTORY_CHANNEL_KNOWLEDGE_REDIS_KEY_FMT: ${AGENT_FACTORY_CHANNEL_KNOWLEDGE_REDIS_KEY_FMT:-agent-factory:channel_knowledge:%s:markdown}
       SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
       SKILL_TOOL_SPECS_DIR: ${SKILL_TOOL_SPECS_DIR:-/workspace/skill-factory/tools/v1}
       ONBOARDING_CHANNEL: ${ONBOARDING_CHANNEL:-}
@@ -74,8 +75,8 @@ services:
         source: ../skill-factory
         target: /workspace/skill-factory
 
-  # makeacompany-backend: compose defaults use `redis` + `agent-factory:*` channel keys. Prod GitOps uses
-  # employee-factory-redis and `employee-factory:*` keys — see ../makeacompany-ai/docs/redis-wiring-reconciliation.md.
+  # makeacompany-backend: same Redis + `agent-factory:*` key names as prod (makeacompany-ai-config + agent-factory-config).
+  # See ../makeacompany-ai/docs/redis-wiring-reconciliation.md.
   makeacompany-backend:
     profiles: ["local"]
     build:
@@ -94,6 +95,9 @@ services:
       COMPANY_CHANNELS_REDIS_URL: ${COMPANY_CHANNELS_REDIS_URL:-}
       COMPANY_CHANNELS_REDIS_KEY: ${COMPANY_CHANNELS_REDIS_KEY:-agent-factory:company_channels}
       CAPABILITY_ROUTING_EVENTS_REDIS_KEY: ${CAPABILITY_ROUTING_EVENTS_REDIS_KEY:-agent-factory:capability_routing_events}
+      CHANNEL_KNOWLEDGE_REDIS_KEY_FMT: ${CHANNEL_KNOWLEDGE_REDIS_KEY_FMT:-agent-factory:channel_knowledge:%s:markdown}
+      COMPANY_CHANNELS_INVALIDATE_CHANNEL: ${COMPANY_CHANNELS_INVALIDATE_CHANNEL:-agent-factory:company_channels:invalidate}
+      THREAD_OWNER_REDIS_KEY_SCAN_PATTERN: ${THREAD_OWNER_REDIS_KEY_SCAN_PATTERN:-agent-factory:thread_owner:%s:*}
       BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
       CAPABILITY_CATALOG_READ_TOKEN: ${CAPABILITY_CATALOG_READ_TOKEN:-}
       REQUIRE_CAPABILITY_CATALOG_READ_TOKEN: ${REQUIRE_CAPABILITY_CATALOG_READ_TOKEN:-false}
