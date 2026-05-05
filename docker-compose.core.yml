@@ -1,8 +1,8 @@
-# Local "core" stack: Slack → NATS → agent bots + makeacompany admin UI. It does **not** run Kubernetes-style
-# CronJobs. Channel knowledge markdown in Redis (`agent-factory:channel_knowledge:*:markdown`) is produced by a
-# separate **channel-knowledge-refresh** batch binary (historically the `channel-scraper` CronJob on the
-# employee-factory image in GitOps). Until that job runs against this Redis (or refresh is ported into
-# agent-factory), `/admin/...` digest panels stay empty even when the rest of the stack is healthy.
+# Local "core" stack: Slack → NATS → agent bots + makeacompany admin UI, plus **cold-start style loops** that
+# mirror prod CronJobs: Slack user + member-channel snapshots (curl → makeacompany-backend internal routes) and
+# channel-knowledge harvest (`/app/channel-knowledge-refresh` on the **employee-factory** image — same binary as
+# prod `channel-scraper`). Pin `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` to a tag whose binary writes `agent-factory:*`
+# digest keys (see README "Core local stack").
 services:
   nats:
     profiles: ["local"]
@@ -491,6 +491,82 @@ services:
       - type: bind
         source: ../shared-contracts
         target: /workspace/shared-contracts
+
+  # Mirrors makeacompany-ai CronJobs `makeacompany-ai-slack-users-scraper` + `makeacompany-ai-slack-member-channels-scraper`.
+  makeacompany-slack-snapshots:
+    profiles: ["local"]
+    image: curlimages/curl:8.5.0
+    restart: unless-stopped
+    depends_on:
+      - makeacompany-backend
+    environment:
+      BACKEND_INTERNAL_SERVICE_TOKEN: ${BACKEND_INTERNAL_SERVICE_TOKEN}
+      SNAPSHOT_BOOT_DELAY_SEC: ${SNAPSHOT_BOOT_DELAY_SEC:-25}
+      SNAPSHOT_REFRESH_INTERVAL_SEC: ${SNAPSHOT_REFRESH_INTERVAL_SEC:-900}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        echo "makeacompany-slack-snapshots: waiting $$SNAPSHOT_BOOT_DELAY_SEC s for backend..."
+        sleep "$$SNAPSHOT_BOOT_DELAY_SEC"
+        INTERVAL="$$SNAPSHOT_REFRESH_INTERVAL_SEC"
+        while true; do
+          echo "POST /v1/internal/refresh-slack-users-snapshot"
+          curl -sfS -X POST \
+            -H "Authorization: Bearer $$BACKEND_INTERNAL_SERVICE_TOKEN" \
+            "http://makeacompany-backend:8080/v1/internal/refresh-slack-users-snapshot" \
+            || echo "makeacompany-slack-snapshots: users snapshot failed (retrying later)"
+          echo "POST /v1/internal/refresh-slack-member-channels-snapshot"
+          curl -sfS -X POST \
+            -H "Authorization: Bearer $$BACKEND_INTERNAL_SERVICE_TOKEN" \
+            "http://makeacompany-backend:8080/v1/internal/refresh-slack-member-channels-snapshot" \
+            || echo "makeacompany-slack-snapshots: member-channels snapshot failed (retrying later)"
+          echo "makeacompany-slack-snapshots: sleeping $$INTERVAL s"
+          sleep "$$INTERVAL"
+        done
+
+  # Mirrors employee-factory `channel-scraper` CronJob (prod image often suspended in GitOps; here it runs on a loop).
+  channel-knowledge-refresh:
+    profiles: ["local"]
+    image: ${CHANNEL_KNOWLEDGE_REFRESH_IMAGE:-geeemoney/employee-factory:0.15.23}
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SLACK_BOT_TOKEN: ${ORCHESTRATOR_SLACK_BOT_TOKEN}
+      COMPANY_CHANNELS_REDIS_ENABLED: "true"
+      COMPANY_CHANNELS_REDIS_KEY: ${COMPANY_CHANNELS_REDIS_KEY:-agent-factory:company_channels}
+      CHANNEL_KNOWLEDGE_SLACK_NOTIFY: "false"
+      CHANNEL_KNOWLEDGE_REFRESH_INTERVAL_SEC: ${CHANNEL_KNOWLEDGE_REFRESH_INTERVAL_SEC:-180}
+      CHANNEL_KNOWLEDGE_HISTORY_LIMIT: "5000"
+      CHANNEL_KNOWLEDGE_HISTORY_PAGE_SIZE: "200"
+      CHANNEL_KNOWLEDGE_HISTORY_MAX_PAGES: "50"
+      CHANNEL_KNOWLEDGE_MAX_STORE_RUNES: "2000000"
+      CHANNEL_KNOWLEDGE_TTL_SEC: "2592000"
+      CHANNEL_KNOWLEDGE_INCR_HISTORY_MAX_MSGS: "400"
+      CHANNEL_KNOWLEDGE_INCR_THREAD_POLL_MAX: "80"
+      CHANNEL_KNOWLEDGE_INCR_THREAD_POLL_MAX_WHEN_IDLE: "20"
+      CHANNEL_KNOWLEDGE_MAX_STORED_EVENTS: "25000"
+      CHANNEL_KNOWLEDGE_RECENT_WINDOW_HOURS: "72"
+      CHANNEL_KNOWLEDGE_RECENT_MAX_STORE_RUNES: "150000"
+      CHANNEL_KNOWLEDGE_MAX_TRACKED_THREADS: "2000"
+      CHANNEL_KNOWLEDGE_CHANNEL_IDS: ${CHANNEL_KNOWLEDGE_CHANNEL_IDS:-}
+      # Optional OpenRouter key for post-digest “company pulse” (same as prod CronJob secretRef optional).
+      JOANNE_OR_KEY: ${JOANNE_OR_KEY:-}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        INTERVAL="$$CHANNEL_KNOWLEDGE_REFRESH_INTERVAL_SEC"
+        echo "channel-knowledge-refresh: loop every $$INTERVAL s"
+        while true; do
+          /app/channel-knowledge-refresh \
+            || echo "channel-knowledge-refresh: non-zero exit (retrying after sleep)"
+          sleep "$$INTERVAL"
+        done
 
 volumes:
   slack_orchestrator_gomod:

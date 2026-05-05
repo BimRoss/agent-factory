@@ -65,13 +65,16 @@ Both include:
 - `makeacompany-backend` + `makeacompany-frontend`
 - `skill-factory` validator service
 - `shared-contracts` validator service
-- local `nats` dependency
+- local `nats` + `redis`
+- **Cold-start mirrors of prod CronJobs (profile `local` only):**
+  - `makeacompany-slack-snapshots` — loops `POST /v1/internal/refresh-slack-users-snapshot` and `…/refresh-slack-member-channels-snapshot` against the compose backend (same bearer as `BACKEND_INTERNAL_SERVICE_TOKEN`).
+  - `channel-knowledge-refresh` — runs `/app/channel-knowledge-refresh` from the **`geeemoney/employee-factory`** image on an interval, using **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` so history scrape matches prod (orchestrator must be **in** every company channel you expect digests for). Override image with **`CHANNEL_KNOWLEDGE_REFRESH_IMAGE`** if your tag must match a build that writes **`agent-factory:*`** digest keys.
 
 Run:
 
 - `docker compose -f docker-compose.core.yml --env-file .env.dev --profile local up --build`
 
-This now boots the full local MakeACompany + agent runtime loop from one compose entrypoint.
+This boots the full local MakeACompany + agent runtime loop and keeps Slack-derived Redis snapshots and channel knowledge in motion like a cold-started cluster.
 
 Serve mode now consumes orchestrator envelopes from JetStream:
 
