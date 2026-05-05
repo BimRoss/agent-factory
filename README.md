@@ -68,7 +68,7 @@ Both include:
 - local `nats` + `redis`
 - **Cold-start mirrors of prod CronJobs (profile `local` only):**
   - `makeacompany-slack-snapshots` — loops `POST /v1/internal/refresh-slack-users-snapshot` and `…/refresh-slack-member-channels-snapshot` against the compose backend (same bearer as `BACKEND_INTERNAL_SERVICE_TOKEN`).
-  - `channel-knowledge-refresh` — runs `/app/channel-knowledge-refresh` from the **`geeemoney/employee-factory`** image on an interval, using **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` so history scrape matches prod (orchestrator must be **in** every company channel you expect digests for). The service is pinned to **`platform: linux/amd64`** because shipped tags are amd64-only (Apple Silicon otherwise errors with *no matching manifest for linux/arm64*). Override image with **`CHANNEL_KNOWLEDGE_REFRESH_IMAGE`** if your tag must match a build that writes **`agent-factory:*`** digest keys.
+  - `channel-knowledge-refresh` — runs `/app/channel-knowledge-refresh` on an interval. The **employee-factory** repository and worker runtime are **deprecated**; this service still pulls the legacy **`geeemoney/employee-factory`** image **only** because that binary has not been republished from **agent-factory** (or a slim replacement) yet—same artifact prod `channel-scraper` uses. Uses **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` (orchestrator must be **in** every company channel you expect digests for). Pinned to **`platform: linux/amd64`** (shipped tags are amd64-only; Apple Silicon otherwise errors with *no matching manifest for linux/arm64*). Override with **`CHANNEL_KNOWLEDGE_REFRESH_IMAGE`** for a tag whose binary writes **`agent-factory:*`** digest keys.
 
 Run:
 
@@ -120,9 +120,11 @@ Options:
 - `ROLLOUT_AFTER_SECRET_SYNC=true` to restart workloads after secret apply
 - `PULL_SECRET_SOURCE_NAMESPACE` / `PULL_SECRET_FALLBACK_NAMESPACE` to control dockerhub-pull copy source
 
-## Prod cutover readiness signal
+## Runtime ownership
 
-Before deprecating `employee-factory`, require all of the following:
+**`employee-factory`** (repo + primary worker image) is **deprecated**; **agent-factory** owns the squad runtime. A few **legacy binaries** (notably **`/app/channel-knowledge-refresh`**) may still ship on the **`geeemoney/employee-factory`** image until republished from **agent-factory** or a dedicated job image—local compose and GitOps `channel-scraper` reference that artifact only for digest harvest, not for Socket Mode / NATS workers.
+
+**Healthy cutover bar** (ongoing, not “before deprecating”):
 
 1. `agent-factory` namespace exists with healthy admin + employee pods.
 2. Mirrored runtime secrets exist in `agent-factory`, `slack-orchestrator`, and `makeacompany-ai`.
@@ -134,3 +136,4 @@ Before deprecating `employee-factory`, require all of the following:
    - `makeacompany-ai`
 4. `RANCHER_ADMIN_REPO_TOKEN` exists in every repo that performs GitOps manifest writes.
 5. Slack round-trip smoke test passes on `agent-factory` employees for core paths.
+6. **Follow-up:** move **`channel-knowledge-refresh`** off the **`employee-factory`** image once the binary is built and released from the owning repo.

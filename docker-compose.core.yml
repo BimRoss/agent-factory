@@ -1,8 +1,9 @@
 # Local "core" stack: Slack → NATS → agent bots + makeacompany admin UI, plus **cold-start style loops** that
 # mirror prod CronJobs: Slack user + member-channel snapshots (curl → makeacompany-backend internal routes) and
-# channel-knowledge harvest (`/app/channel-knowledge-refresh` on the **employee-factory** image — same binary as
-# prod `channel-scraper`). Pin `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` to a tag whose binary writes `agent-factory:*`
-# digest keys (see README "Core local stack").
+# channel-knowledge harvest. The **employee-factory repo is deprecated** (runtime is **agent-factory**); until the
+# refresh binary ships from a successor image, compose still runs `/app/channel-knowledge-refresh` from the legacy
+# **geeemoney/employee-factory** image (same as prod `channel-scraper`). Pin `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` to a
+# tag whose binary writes `agent-factory:*` digest keys (see README "Core local stack").
 services:
   nats:
     profiles: ["local"]
@@ -526,7 +527,7 @@ services:
           sleep "$$INTERVAL"
         done
 
-  # Mirrors employee-factory `channel-scraper` CronJob (prod image often suspended in GitOps; here it runs on a loop).
+  # Legacy image only: employee-factory repo is deprecated; this mirrors prod `channel-scraper` until refresh ships elsewhere.
   channel-knowledge-refresh:
     profiles: ["local"]
     # CI pushes linux/amd64 only; Apple Silicon needs explicit platform to pull/run.
