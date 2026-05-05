@@ -99,3 +99,35 @@ Current behavior:
 - if skill missing, owner delegates internally and posts "transferring to..." update
 - users do not manually reroute
 - final output remains tied to original thread/trace
+
+## Rancher prod secret sync
+
+Use the canonical sync entrypoint in this repo to mirror one prod keyset into all runtime namespaces:
+
+- `./scripts/update-rancher-secrets.sh`
+- defaults:
+  - `ENV_FILE=.env.prod`
+  - `KUBECONFIG=~/.kube/config/admin.yaml`
+  - `KUBE_CONTEXT=admin`
+  - `TARGET_SECRET_MAP=agent-factory:agent-factory-runtime,slack-orchestrator:slack-orchestrator-runtime,makeacompany-ai:makeacompany-ai-runtime-secrets`
+
+Options:
+
+- `TARGET_SECRET_MAP` to override namespace/secret targets
+- `ROLLOUT_AFTER_SECRET_SYNC=true` to restart workloads after secret apply
+- `PULL_SECRET_SOURCE_NAMESPACE` / `PULL_SECRET_FALLBACK_NAMESPACE` to control dockerhub-pull copy source
+
+## Prod cutover readiness signal
+
+Before deprecating `employee-factory`, require all of the following:
+
+1. `agent-factory` namespace exists with healthy admin + employee pods.
+2. Mirrored runtime secrets exist in `agent-factory`, `slack-orchestrator`, and `makeacompany-ai`.
+3. Tag-driven release workflows pass in all repos:
+   - `agent-factory`
+   - `skill-factory`
+   - `shared-contracts`
+   - `slack-orchestrator`
+   - `makeacompany-ai`
+4. `RANCHER_ADMIN_REPO_TOKEN` exists in every repo that performs GitOps manifest writes.
+5. Slack round-trip smoke test passes on `agent-factory` employees for core paths.

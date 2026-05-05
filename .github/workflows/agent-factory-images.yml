@@ -1,0 +1,146 @@
+name: Build agent-factory image
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  agent-factory:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: geeemoney/agent-factory
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=build,enable=${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  gitops-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs:
+      - agent-factory
+    env:
+      RANCHER_ADMIN_REPO: bimross/rancher-admin
+    steps:
+      - name: Compute release version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout rancher-admin
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.RANCHER_ADMIN_REPO }}
+          ref: master
+          token: ${{ secrets.RANCHER_ADMIN_REPO_TOKEN }}
+          path: rancher-admin
+          fetch-depth: 0
+
+      - name: Update agent-factory image tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          paths = [
+              Path("rancher-admin/admin/apps/agent-factory/admin-api.yaml"),
+              Path("rancher-admin/admin/apps/agent-factory/employees.yaml"),
+          ]
+          for path in paths:
+              if not path.is_file():
+                  raise SystemExit(f"missing {path}")
+              content = path.read_text()
+              updated = re.sub(
+                  r"(geeemoney/agent-factory:)[^\s\"']+",
+                  lambda m: f"{m.group(1)}{version}",
+                  content,
+              )
+              path.write_text(updated)
+          PY
+
+      - name: Commit and push manifest updates
+        working-directory: rancher-admin
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git diff --quiet; then
+            echo "No manifest changes to commit."
+            exit 0
+          fi
+          git config user.name "agent-factory-ci"
+          git config user.email "agent-factory-ci@users.noreply.github.com"
+          git add admin/apps/agent-factory/admin-api.yaml admin/apps/agent-factory/employees.yaml
+          git commit -m "release(agent-factory): bump image to ${VERSION}"
+          for attempt in 1 2 3; do
+            if git push origin master; then
+              echo "Push succeeded on attempt ${attempt}."
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "Push failed after ${attempt} attempts."
+              exit 1
+            fi
+            echo "Push race detected; rebasing onto latest origin/master and retrying."
+            git pull --rebase origin master
+          done
