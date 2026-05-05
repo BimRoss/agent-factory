@@ -4,6 +4,13 @@
 # builds `deploy/channel-knowledge-refresh-loop/` to copy `/app/channel-knowledge-refresh` from legacy
 # **geeemoney/employee-factory** into debian:bookworm-slim (upstream tags are often distroless — no `/bin/sh`).
 # `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` selects the upstream tag; binary must write `agent-factory:*` digest keys.
+#
+# Channel-knowledge cold start (two phases — same as prod refresh, obvious locally because compose Redis is empty):
+#   1) **Discover** Slack channel IDs the bot can see (`users.conversations` — log: `discovered N channel(s)`).
+#   2) **Bootstrap each channel** one at a time (`channel_knowledge_bootstrap: ok channel=…` per id). Large channels
+#      can take a minute+ each; until phase-2 reaches a given id, admin/portal “no digest in Redis” is expected.
+#   Mitigate: set `CHANNEL_KNOWLEDGE_CHANNEL_IDS` (comma-separated) in `.env.dev` to harvest only the channels you
+#   are testing; reload the browser after that channel’s bootstrap line appears in logs.
 services:
   nats:
     profiles: ["local"]
@@ -530,6 +537,7 @@ services:
         done
 
   # Legacy binary from employee-factory image (often distroless — no /bin/sh); local shim Dockerfile adds shell + loop.
+  # Each loop tick: discover channel IDs, then sequentially bootstrap/harvest — see file header “Channel-knowledge cold start”.
   channel-knowledge-refresh:
     profiles: ["local"]
     # CI pushes linux/amd64 only; Apple Silicon needs explicit platform to pull/run.
