@@ -8,11 +8,13 @@ RUN go mod download
 COPY agent-factory/ ./
 RUN go build -o /out/agent-factory ./cmd/agent-factory
 RUN go build -o /out/agent-factory-admin ./cmd/agent-factory-admin
+RUN go build -o /out/channel-knowledge-refresh ./cmd/channel-knowledge-refresh
 
 FROM alpine:3.20
 WORKDIR /app
 COPY --from=build /out/agent-factory /app/agent-factory
 COPY --from=build /out/agent-factory-admin /app/agent-factory-admin
+COPY --from=build /out/channel-knowledge-refresh /app/channel-knowledge-refresh
 COPY shared-contracts /workspace/shared-contracts
 COPY skill-factory /workspace/skill-factory
 ENV SHARED_CONTRACTS_DIR=/workspace/shared-contracts

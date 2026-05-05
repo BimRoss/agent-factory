@@ -1,9 +1,7 @@
 # Local "core" stack: Slack → NATS → agent bots + makeacompany admin UI, plus **cold-start style loops** that
 # mirror prod CronJobs: Slack user + member-channel snapshots (curl → makeacompany-backend internal routes) and
-# channel-knowledge harvest. The **employee-factory repo is deprecated** (runtime is **agent-factory**); compose
-# builds `deploy/channel-knowledge-refresh-loop/` to copy `/app/channel-knowledge-refresh` from legacy
-# **geeemoney/employee-factory** into debian:bookworm-slim (upstream tags are often distroless — no `/bin/sh`).
-# `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` selects the upstream tag; binary must write `agent-factory:*` digest keys.
+# channel-knowledge harvest. Compose builds `deploy/channel-knowledge-refresh-loop/` from **this repo’s Go sources**
+# (debian:bookworm-slim + shell loop). The binary writes `agent-factory:channel_knowledge:<C>:markdown` keys.
 #
 # Channel-knowledge cold start (two phases — same as prod refresh, obvious locally because compose Redis is empty):
 #   1) **Discover** Slack channel IDs the bot can see (`users.conversations` — log: `discovered N channel(s)`).
@@ -536,18 +534,16 @@ services:
           sleep "$$INTERVAL"
         done
 
-  # Legacy binary from employee-factory image (often distroless — no /bin/sh); local shim Dockerfile adds shell + loop.
+  # channel-knowledge-refresh: built from ./cmd/channel-knowledge-refresh in this repo (see deploy/channel-knowledge-refresh-loop/).
   # Each loop tick: discover channel IDs, then sequentially bootstrap/harvest — see file header “Channel-knowledge cold start”.
   channel-knowledge-refresh:
     profiles: ["local"]
-    # CI pushes linux/amd64 only; Apple Silicon needs explicit platform to pull/run.
+    # CI pushes linux/amd64 only; Apple Silicon needs explicit platform for consistent builds.
     platform: linux/amd64
     image: agent-factory-channel-knowledge-refresh:local
     build:
       context: .
       dockerfile: deploy/channel-knowledge-refresh-loop/Dockerfile
-      args:
-        UPSTREAM_IMAGE: ${CHANNEL_KNOWLEDGE_REFRESH_IMAGE:-geeemoney/employee-factory:0.15.23}
     restart: unless-stopped
     depends_on:
       - redis

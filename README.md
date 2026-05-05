@@ -68,7 +68,7 @@ Both include:
 - local `nats` + `redis`
 - **Cold-start mirrors of prod CronJobs (profile `local` only):**
   - `makeacompany-slack-snapshots` — loops `POST /v1/internal/refresh-slack-users-snapshot` and `…/refresh-slack-member-channels-snapshot` against the compose backend (same bearer as `BACKEND_INTERNAL_SERVICE_TOKEN`). That seeds **makeacompany** Slack user + member-channel snapshots in Redis (admin lists, `/admin` channel pickers). It does **not** drive channel-knowledge markdown keys.
-  - `channel-knowledge-refresh` — builds a tiny **`agent-factory-channel-knowledge-refresh:local`** image (`deploy/channel-knowledge-refresh-loop/`) that copies `/app/channel-knowledge-refresh` from the legacy **`geeemoney/employee-factory`** tag into **debian:bookworm-slim** and runs a shell loop. Upstream tags are often **distroless** (no `/bin/sh`), which caused *exec: "/bin/sh": stat /bin/sh: no such file* when compose tried to wrap the binary inline. **`CHANNEL_KNOWLEDGE_REFRESH_IMAGE`** selects the upstream tag to copy from. The **employee-factory** repo is **deprecated**; this is only the binary source until refresh ships from **agent-factory**. Uses **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` (orchestrator must be **in** every company channel you expect digests for). Service **`platform: linux/amd64`** matches CI-built tags on Apple Silicon.
+  - `channel-knowledge-refresh` — builds **`agent-factory-channel-knowledge-refresh:local`** (`deploy/channel-knowledge-refresh-loop/`) by compiling **`./cmd/channel-knowledge-refresh`** from this repo into **debian:bookworm-slim** + shell loop (no **`geeemoney/employee-factory`** image). Uses **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` (orchestrator must be **in** every company channel you expect digests for). Service **`platform: linux/amd64`** matches CI-built tags on Apple Silicon.
   - **Digest cold start (two phases):** each refresh run first **discovers** channel IDs from Slack (`users.conversations`), then **bootstraps/harvests channels one at a time** into `agent-factory:channel_knowledge:<id>:markdown`. After `docker compose up`, Redis is empty until phase-2 reaches each id — expect minutes if you have many channels. Set **`CHANNEL_KNOWLEDGE_CHANNEL_IDS`** (comma-separated) in `.env.dev` to narrow phase-2 for local work; **reload** admin/portal after logs show `channel_knowledge_bootstrap: ok` for your id.
 
 Run:
@@ -76,6 +76,8 @@ Run:
 - `docker compose -f docker-compose.core.yml --env-file .env.dev --profile local up --build`
 
 This boots the full local MakeACompany + agent runtime loop and keeps Slack-derived Redis snapshots and channel knowledge in motion like a cold-started cluster.
+
+**Production / GitOps:** the shipped **`geeemoney/agent-factory`** image includes **`/app/channel-knowledge-refresh`** (same as workers). After the next **`v*`** release that contains this binary, point **`channel-scraper`** (or equivalent CronJob) at **`geeemoney/agent-factory:<tag>`** with `command: ["/app/channel-knowledge-refresh"]` instead of **`geeemoney/employee-factory:…`**, then retire duplicate **`employee-factory`** workloads when ready.
 
 Serve mode now consumes orchestrator envelopes from JetStream:
 
@@ -123,7 +125,7 @@ Options:
 
 ## Runtime ownership
 
-**`employee-factory`** (repo + primary worker image) is **deprecated**; **agent-factory** owns the squad runtime. A few **legacy binaries** (notably **`/app/channel-knowledge-refresh`**) may still ship on the **`geeemoney/employee-factory`** image until republished from **agent-factory** or a dedicated job image—local compose and GitOps `channel-scraper` reference that artifact only for digest harvest, not for Socket Mode / NATS workers.
+**`employee-factory`** (repo + legacy worker image) is **deprecated**; **agent-factory** owns the squad runtime and now **builds `channel-knowledge-refresh` from this repo** (see `cmd/channel-knowledge-refresh` and `deploy/channel-knowledge-refresh-loop/`). The shipped **`geeemoney/agent-factory`** image includes **`/app/channel-knowledge-refresh`** alongside **`/app/agent-factory`**. GitOps may still point **`channel-scraper`** at **`geeemoney/employee-factory:…`** until that CronJob’s image is switched to the matching **`geeemoney/agent-factory:<tag>`** after a release.
 
 **Healthy cutover bar** (ongoing, not “before deprecating”):
 
@@ -137,4 +139,4 @@ Options:
    - `makeacompany-ai`
 4. `RANCHER_ADMIN_REPO_TOKEN` exists in every repo that performs GitOps manifest writes.
 5. Slack round-trip smoke test passes on `agent-factory` employees for core paths.
-6. **Follow-up:** move **`channel-knowledge-refresh`** off the **`employee-factory`** image once the binary is built and released from the owning repo.
+6. **GitOps:** after the next **`agent-factory`** **`v*`** release that includes the refresh binary, update **`channel-scraper`** / digest CronJob **`image:`** to **`geeemoney/agent-factory:<same tag>`** (replacing **`geeemoney/employee-factory:…`**), then scale down or remove redundant **`employee-factory`** worker deployments when traffic is fully on **agent-factory**.
