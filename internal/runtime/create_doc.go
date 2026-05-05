@@ -11,14 +11,16 @@ import (
 
 var (
 	reCreateDocTitle      = regexp.MustCompile(`(?i)\b(?:title|subject)\s*:\s*([^;\n]+)`)
+	reCreateDocTitled     = regexp.MustCompile(`(?i)\b(?:title(?:\s+it)?|titled|called|named)\s+(?:"([^"]+)"|'([^']+)'|([^;\n]+))`)
 	reCreateDocBody       = regexp.MustCompile(`(?i)\b(?:body|content)\s*:\s*([^;\n]+)`)
 	reCreateDocPages      = regexp.MustCompile(`(?i)\b(\d+)\s*pages?\b`)
 	reCreateDocLikelyMail = regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`)
 
-	reCreateDocEditorCue    = regexp.MustCompile(`(?i)\b(?:editors?|share with|grant (?:editor )?access|add as editor)\b`)
-	reCreateDocCommenterCue = regexp.MustCompile(`(?i)\b(?:commenters?|grant commenter access|add as commenter)\b`)
-	reCreateDocViewerCue    = regexp.MustCompile(`(?i)\b(?:viewers?|read-only|grant viewer access|add as viewer)\b`)
-	reCreateDocSentence     = regexp.MustCompile(`(?:;|!|\?|\.(?:\s+|$))`)
+	reCreateDocEditorCue         = regexp.MustCompile(`(?i)\b(?:editors?|share with|grant (?:editor )?access|add as editor)\b`)
+	reCreateDocCommenterCue      = regexp.MustCompile(`(?i)\b(?:commenters?|grant commenter access|add as commenter)\b`)
+	reCreateDocViewerCue         = regexp.MustCompile(`(?i)\b(?:viewers?|read-only|grant viewer access|add as viewer)\b`)
+	reCreateDocSentence          = regexp.MustCompile(`(?:;|!|\?|\.(?:\s+|$))`)
+	reCreateDocSlackMentionToken = regexp.MustCompile(`<@[A-Z0-9]+>`)
 )
 
 type createDocRequest struct {
@@ -99,8 +101,12 @@ func (e *Engine) runCreateDoc(ctx context.Context, task Task) (RenderPayload, er
 
 func parseCreateDocRequest(raw string) createDocRequest {
 	text := strings.TrimSpace(raw)
+	title := extractDocField(reCreateDocTitle, text)
+	if title == "" {
+		title = inferCreateDocTitle(text)
+	}
 	req := createDocRequest{
-		Title:       extractDocField(reCreateDocTitle, text),
+		Title:       title,
 		Body:        extractDocField(reCreateDocBody, text),
 		Instruction: strings.TrimSpace(text),
 		Pages:       extractPageCount(text),
@@ -200,6 +206,58 @@ func extractPageCount(text string) int {
 		return 0
 	}
 	return n
+}
+
+func inferCreateDocTitle(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	m := reCreateDocTitled.FindStringSubmatch(text)
+	if len(m) == 0 {
+		return ""
+	}
+	candidates := []string{}
+	for i := 1; i < len(m); i++ {
+		candidates = append(candidates, m[i])
+	}
+	for _, raw := range candidates {
+		title := sanitizeInferredTitle(raw)
+		if title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func sanitizeInferredTitle(raw string) string {
+	title := strings.TrimSpace(raw)
+	if title == "" {
+		return ""
+	}
+	title = reCreateDocSlackMentionToken.ReplaceAllString(title, "")
+	lower := strings.ToLower(title)
+	for _, marker := range []string{
+		" summarizing ",
+		" summary of ",
+		" about ",
+		" regarding ",
+		" with ",
+		" for ",
+		" - ",
+		" -- ",
+	} {
+		if idx := strings.Index(lower, marker); idx > 0 {
+			title = strings.TrimSpace(title[:idx])
+			lower = strings.ToLower(title)
+		}
+	}
+	title = strings.TrimSpace(strings.Trim(title, `"'`))
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) > 120 {
+		title = strings.TrimSpace(title[:120])
+	}
+	return title
 }
 
 func inferEmailsByCue(raw string, primary *regexp.Regexp, secondary ...*regexp.Regexp) []string {

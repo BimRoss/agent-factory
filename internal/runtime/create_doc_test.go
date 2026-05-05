@@ -31,6 +31,22 @@ func TestParseCreateDocRequest_ExtractsBody(t *testing.T) {
 	}
 }
 
+func TestParseCreateDocRequest_InferTitleFromTitledPhrase(t *testing.T) {
+	raw := "draft a google doc titled AI Debate summarizing the conversation"
+	req := parseCreateDocRequest(raw)
+	if req.Title != "AI Debate" {
+		t.Fatalf("title=%q", req.Title)
+	}
+}
+
+func TestParseCreateDocRequest_InferQuotedTitleFromTitleIt(t *testing.T) {
+	raw := `create a google doc and title it "Iran Debate 2026" with key quotes`
+	req := parseCreateDocRequest(raw)
+	if req.Title != "Iran Debate 2026" {
+		t.Fatalf("title=%q", req.Title)
+	}
+}
+
 func TestDefaultCreateDocTitle(t *testing.T) {
 	title := defaultCreateDocTitle(Task{})
 	if title == "" {
