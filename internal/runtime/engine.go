@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,10 @@ import (
 	"github.com/bimross/agent-factory/internal/orchestratorevent"
 	"github.com/slack-go/slack"
 )
+
+// ErrNoEmployeeForCapability means no pod in the loaded registry owns this tool and remote handoff did not apply.
+// Orchestrator payload handlers may fall back to ExecuteConversation when they see this error.
+var ErrNoEmployeeForCapability = errors.New("no employee available for capability")
 
 // ThreadContextFunc optionally supplies Slack thread history (e.g. from
 // conversations.replies) to conversation mode. When nil, only the memory bank
@@ -142,7 +147,7 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 	if !e.registry.EmployeeHasCapability(task.OwnerEmployeeID, capabilityID) {
 		toEmployeeID, ok := e.registry.FindEmployeeForCapability(capabilityID, task.OwnerEmployeeID)
 		if !ok || toEmployeeID == "" {
-			return task, fmt.Errorf("no employee available for capability %s", capabilityID)
+			return task, fmt.Errorf("%w %s", ErrNoEmployeeForCapability, capabilityID)
 		}
 		// True multi-pod handoff: Redis + JetStream to slack.work.<to>.events (no local execution on this process).
 		if e.remote != nil && source != nil {
@@ -259,6 +264,17 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			return task, err
 		}
 		p, err := e.runCreateGitHubRepo(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
+	} else if capabilityID == "read-user" {
+		if err := e.publisher.PublishUpdate(task, "Looking up Slack profile…"); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runReadUser(ctx, task)
 		if err != nil {
 			_ = e.publisher.ClearInboundReaction(task)
 			return task, err

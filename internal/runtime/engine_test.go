@@ -1,6 +1,17 @@
 package runtime
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+)
+
+func TestErrNoEmployeeForCapabilityWrapped(t *testing.T) {
+	err := fmt.Errorf("%w %s", ErrNoEmployeeForCapability, "create-github-repo")
+	if !errors.Is(err, ErrNoEmployeeForCapability) {
+		t.Fatalf("errors.Is: %v", err)
+	}
+}
 
 func TestIsCreateIssueCapability(t *testing.T) {
 	tests := []struct {

@@ -13,11 +13,14 @@ var (
 	reFieldMarker = regexp.MustCompile(`(?is)\b(to|subject|title|body|instruction|body_instruction|cta|cta_text|button|cta_url|link|url)\s*:\s*`)
 	// Conversational subject/title — mirrors create-google-doc natural phrasing ("subject is Foo,").
 	reEmailSubjectTitleIs = regexp.MustCompile(`(?i)\b(?:subject|title)(?:\s+line)?\s+is\s+(?:"([^"]+)"|'([^']+)'|([^,;\n]+))`)
-	reSlackMentionToken   = regexp.MustCompile(`<@[A-Z0-9]+>`)
-	reEmailInferButton    = regexp.MustCompile(`(?i)\b(?:button|cta)\s+is\s+(?:"([^"]+)"|'([^']+)'|([^,;\n]+))`)
-	reEmailInferLink      = regexp.MustCompile(`(?i)\b(?:link|url)\s+is\s+(?:<(https?://[^>|]+)(?:\|[^>]*)?>|(https?://[^\s,<]+))`)
+	// "subject Quarterly recap" without "is" (try only after reEmailSubjectTitleIs misses).
+	reEmailSubjectTitleBare = regexp.MustCompile(`(?i)\b(?:subject|title)(?:\s+line)?\s+(?:"([^"]+)"|'([^']+)'|([^,;\n]+))`)
+	reSlackMentionToken     = regexp.MustCompile(`<@[A-Z0-9]+>`)
+	reEmailInferButton      = regexp.MustCompile(`(?i)\b(?:button|cta)\s+is\s+(?:"([^"]+)"|'([^']+)'|([^,;\n]+))`)
+	// Conversational link: "link is …", "url is …", and natural "link to …" / "url to …".
+	reEmailInferLink      = regexp.MustCompile(`(?i)\b(?:link|url)\s+(?:is|to)\s+(?:<(https?://[^>|]+)(?:\|[^>]*)?>|(https?://[^\s,<]+))`)
 	reEmailStripButtonCue = regexp.MustCompile(`(?i)\s*\b(?:button|cta)\s+is\s+(?:"[^"]+"|'[^']+'|[^,;\n]+)\s*,?\s*`)
-	reEmailStripLinkCue   = regexp.MustCompile(`(?i)\s*\b(?:link|url)\s+is\s+(?:<https?://[^>|]+(?:\|[^>]*)?>|https?://[^\s,<]+)\s*,?\s*`)
+	reEmailStripLinkCue   = regexp.MustCompile(`(?i)\s*\b(?:link|url)\s+(?:is|to)\s+(?:<https?://[^>|]+(?:\|[^>]*)?>|https?://[^\s,<]+)\s*,?\s*`)
 )
 
 // SendEmailAction mirrors employee-factory internal/emailaction.SendEmailAction.
@@ -261,6 +264,8 @@ func looksLikeSendEmailIntent(lower string) bool {
 		return true
 	case strings.Contains(lower, "link is "), strings.Contains(lower, "url is "):
 		return true
+	case strings.Contains(lower, "link to "), strings.Contains(lower, "url to "):
+		return true
 	case strings.Contains(lower, "email ") && (strings.Contains(lower, "body:") || strings.Contains(lower, "title:") || strings.Contains(lower, "subject:")):
 		return true
 	default:
@@ -393,12 +398,35 @@ func stripConversationalCTAFromResidual(s string) string {
 	return strings.TrimSpace(strings.Join(strings.Fields(out), " "))
 }
 
+// InferEmailSubjectHint extracts a subject from natural phrasing such as
+// "subject is Quarterly recap" or "email me a summary, subject War In Iran".
+func InferEmailSubjectHint(raw string) string {
+	return inferConversationalEmailSubject(raw)
+}
+
 func inferConversationalEmailSubject(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
-	m := reEmailSubjectTitleIs.FindStringSubmatch(raw)
+	if s := firstEmailSubjectCapture(reEmailSubjectTitleIs, raw); s != "" {
+		return s
+	}
+	m := reEmailSubjectTitleBare.FindStringSubmatch(raw)
+	if len(m) < 4 {
+		return ""
+	}
+	for i := 1; i <= 3; i++ {
+		s := sanitizeInferredEmailSubject(m[i])
+		if s != "" && !shouldSkipBareEmailSubjectCapture(s) {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstEmailSubjectCapture(re *regexp.Regexp, raw string) string {
+	m := re.FindStringSubmatch(raw)
 	if len(m) < 4 {
 		return ""
 	}
@@ -409,6 +437,15 @@ func inferConversationalEmailSubject(raw string) string {
 		}
 	}
 	return ""
+}
+
+// Bare subject regex overlaps "subject is X" (capture "is X"); skip that fragment when the dedicated pattern missed.
+func shouldSkipBareEmailSubjectCapture(s string) bool {
+	cs := strings.ToLower(strings.TrimSpace(s))
+	if cs == "" {
+		return true
+	}
+	return cs == "is" || strings.HasPrefix(cs, "is ")
 }
 
 func sanitizeInferredEmailSubject(raw string) string {
@@ -443,6 +480,7 @@ func stripConversationalSubjectFromResidual(s string) string {
 		return ""
 	}
 	out := reEmailSubjectTitleIs.ReplaceAllString(s, " ")
+	out = reEmailSubjectTitleBare.ReplaceAllString(out, " ")
 	return strings.TrimSpace(strings.Join(strings.Fields(out), " "))
 }
 

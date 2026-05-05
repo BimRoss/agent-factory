@@ -140,6 +140,12 @@ func (e *Engine) runCreateEmail(ctx context.Context, task Task) (RenderPayload, 
 
 	subject := strings.TrimSpace(action.Subject)
 	if subject == "" {
+		haystack := strings.TrimSpace(task.RequestText + "\n" + threadCtx)
+		if hint := emailaction.InferEmailSubjectHint(haystack); hint != "" {
+			subject = hint
+		}
+	}
+	if subject == "" {
 		if inferred, err := generateCreateEmailSubject(ctx, e.provider, task, action, threadCtx, bodyFragment); err != nil {
 			log.Printf("create-email: subject generation failed: %v", err)
 		} else if strings.TrimSpace(inferred) != "" {
@@ -267,8 +273,9 @@ Keep it under 12 words.
 			},
 		},
 		"generationConfig": map[string]any{
-			"temperature":      0.2,
-			"maxOutputTokens":  80,
+			"temperature": 0.2,
+			// Some reasoning-capable Gemini models can exhaust the budget before emitting text at 80.
+			"maxOutputTokens":  512,
 			"topP":             0.9,
 			"responseMimeType": "text/plain",
 		},

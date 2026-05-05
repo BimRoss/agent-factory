@@ -27,6 +27,10 @@ func TestInferConversationalEmailSubject(t *testing.T) {
 			raw:  `send email instruction: hello`,
 			want: "",
 		},
+		{
+			raw:  `<!here> debate the war in iran and email me a summary, subject War In Iran`,
+			want: "War In Iran",
+		},
 	}
 	for _, tc := range cases {
 		got := inferConversationalEmailSubject(tc.raw)
@@ -46,6 +50,21 @@ func TestParseRecipientEmailsSelfAliases(t *testing.T) {
 		if len(got) != 1 || got[0] != strings.TrimSpace(strings.ToLower(raw)) {
 			t.Fatalf("ParseRecipientEmails(%q)=%v want single alias token", raw, got)
 		}
+	}
+}
+
+func TestParseSendEmailActionBareSubjectCommaSeparated(t *testing.T) {
+	t.Parallel()
+	raw := `<!here> debate the war in iran and email me a summary, subject War In Iran`
+	action, matched, err := ParseSendEmailAction(raw)
+	if err != nil || !matched {
+		t.Fatalf("parse: matched=%v err=%v", matched, err)
+	}
+	if strings.TrimSpace(action.Subject) != "War In Iran" {
+		t.Fatalf("subject=%q want War In Iran", action.Subject)
+	}
+	if strings.TrimSpace(action.BodyInstruction) == "" {
+		t.Fatal("expected body instruction remainder")
 	}
 }
 
@@ -79,6 +98,41 @@ func TestParseSendEmailPatch_ContinuationFields(t *testing.T) {
 	}
 	if strings.TrimSpace(action.CTAURL) != "https://example.com/welcome" {
 		t.Fatalf("cta url=%q", action.CTAURL)
+	}
+}
+
+func TestParseSendEmailAction_LinkToNaturalLanguage(t *testing.T) {
+	t.Parallel()
+	raw := `<@U123> send a welcome email to me, subject Welcome!, with 3 paragraphs describing why you love your job, button is Our Company, link to https://makeacompany.ai`
+	action, matched, err := ParseSendEmailAction(raw)
+	if err != nil || !matched {
+		t.Fatalf("parse: matched=%v err=%v", matched, err)
+	}
+	if strings.TrimSpace(action.CTAText) != "Our Company" {
+		t.Fatalf("cta text=%q want Our Company", action.CTAText)
+	}
+	if strings.TrimSpace(action.CTAURL) != "https://makeacompany.ai" {
+		t.Fatalf("cta url=%q want https://makeacompany.ai", action.CTAURL)
+	}
+	if strings.TrimSpace(action.Subject) != "Welcome!" {
+		t.Fatalf("subject=%q want Welcome!", action.Subject)
+	}
+}
+
+func TestInferConversationalLinkURL_LinkTo(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		raw, want string
+	}{
+		{`foo link to https://example.com/path bar`, `https://example.com/path`},
+		{`link to http://a.co`, `http://a.co`},
+		{`url to https://makeacompany.ai`, `https://makeacompany.ai`},
+		{`still supports link is https://x.y/z`, `https://x.y/z`},
+	} {
+		got := inferConversationalLinkURL(tc.raw)
+		if got != tc.want {
+			t.Fatalf("inferConversationalLinkURL(%q)=%q want %q", tc.raw, got, tc.want)
+		}
 	}
 }
 

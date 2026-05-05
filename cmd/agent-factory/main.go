@@ -340,6 +340,20 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 				log.Printf("remote handoff dispatched task=%s tool=%s trace=%s", taskID, normalizeID(capabilityID), traceID)
 				return nil
 			}
+			if errors.Is(err, runtime.ErrNoEmployeeForCapability) {
+				log.Printf("orchestrator tool not in worker registry; falling back to conversation task=%s tool=%s trace=%s err=%v",
+					taskID, normalizeID(capabilityID), traceID, err)
+				fb := ownedTask
+				fb.Mode = "conversation"
+				executedTask, convErr := engine.ExecuteConversation(fb)
+				if convErr != nil {
+					return fmt.Errorf("execute capability %s for task %s: %w; conversation fallback: %v", capabilityID, taskID, err, convErr)
+				}
+				maybePublishPipelineContinuation(cfg, event, executedTask)
+				log.Printf("processed orchestrator conversation employee=%s task=%s trace=%s kind=%s (capability_unavailable_fallback)",
+					employeeID, taskID, traceID, kind)
+				return nil
+			}
 			return fmt.Errorf("execute capability %s for task %s: %w", capabilityID, taskID, err)
 		}
 		maybePublishPipelineContinuation(cfg, event, executedTask)
