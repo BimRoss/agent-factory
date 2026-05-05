@@ -1,7 +1,6 @@
 package adminapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,14 +14,19 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/slack-go/slack"
+
+	"github.com/bimross/agent-factory/internal/runtime"
 )
 
 const (
 	defaultListenAddr                    = ":8091"
-	defaultCompanyChannelsRedisKey       = "employee-factory:company_channels"
-	defaultCapabilityRoutingEventsKey    = "employee-factory:capability_routing_events"
-	defaultChannelKnowledgeRedisKeyFmt   = "employee-factory:channel_knowledge:%s:markdown"
+	defaultCompanyChannelsRedisKey       = "agent-factory:company_channels"
+	defaultCapabilityRoutingEventsKey    = "agent-factory:capability_routing_events"
+	defaultChannelKnowledgeRedisKeyFmt   = "agent-factory:channel_knowledge:%s:markdown"
 	defaultMakeACompanyProfileKeyPrefix  = "makeacompany:user_profile:"
+	defaultHumansWelcomeDedupeKeyPrefix  = "agent-factory:humans_terms_welcome:"
+	defaultHumansWelcomeDedupeTTL        = 400 * 24 * time.Hour
 	defaultMaxCompanyChannelsList        = 200
 	defaultMaxCapabilityRoutingEventList = 200
 )
@@ -39,8 +43,9 @@ type Config struct {
 	CapabilityRoutingEventsRedisKey  string
 	ChannelKnowledgeRedisKeyFmt      string
 	MakeACompanyProfileKeyPrefix     string
-	JoanneWelcomeTriggerURL          string
-	JoanneWelcomeTriggerToken        string
+	OnboardingChannelID              string
+	JoanneSlackBotToken              string
+	MakeACompanyAppBaseURL           string
 }
 
 func LoadConfigFromEnv() (Config, error) {
@@ -68,8 +73,9 @@ func LoadConfigFromEnv() (Config, error) {
 		CapabilityRoutingEventsRedisKey:  firstNonEmpty(os.Getenv("CAPABILITY_ROUTING_EVENTS_REDIS_KEY"), defaultCapabilityRoutingEventsKey),
 		ChannelKnowledgeRedisKeyFmt:      firstNonEmpty(os.Getenv("AGENT_FACTORY_CHANNEL_KNOWLEDGE_REDIS_KEY_FMT"), defaultChannelKnowledgeRedisKeyFmt),
 		MakeACompanyProfileKeyPrefix:     firstNonEmpty(os.Getenv("AGENT_FACTORY_MAKEACOMPANY_PROFILE_KEY_PREFIX"), defaultMakeACompanyProfileKeyPrefix),
-		JoanneWelcomeTriggerURL:          strings.TrimSuffix(strings.TrimSpace(os.Getenv("JOANNE_HUMANS_WELCOME_TRIGGER_URL")), "/"),
-		JoanneWelcomeTriggerToken:        strings.TrimSpace(os.Getenv("JOANNE_HUMANS_WELCOME_TRIGGER_TOKEN")),
+		OnboardingChannelID:              strings.TrimSpace(os.Getenv("ONBOARDING_CHANNEL")),
+		JoanneSlackBotToken:              strings.TrimSpace(os.Getenv("JOANNE_SLACK_BOT_TOKEN")),
+		MakeACompanyAppBaseURL:           strings.TrimSuffix(strings.TrimSpace(firstNonEmpty(os.Getenv("MAKEACOMPANY_APP_BASE_URL"), os.Getenv("APP_BASE_URL"), os.Getenv("NEXT_PUBLIC_SITE_URL"))), "/"),
 	}, nil
 }
 
@@ -349,9 +355,9 @@ func (s *Server) handleJoanneWelcomeTrigger(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.cfg.JoanneWelcomeTriggerURL == "" || s.cfg.JoanneWelcomeTriggerToken == "" {
+	if s.cfg.OnboardingChannelID == "" || s.cfg.JoanneSlackBotToken == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error": "JOANNE_HUMANS_WELCOME_TRIGGER_URL and JOANNE_HUMANS_WELCOME_TRIGGER_TOKEN must be set",
+			"error": "ONBOARDING_CHANNEL and JOANNE_SLACK_BOT_TOKEN must be set",
 		})
 		return
 	}
@@ -383,39 +389,63 @@ func (s *Server) handleJoanneWelcomeTrigger(w http.ResponseWriter, r *http.Reque
 	if body.Force != nil {
 		force = *body.Force
 	}
-	payload := map[string]any{
-		"slack_user_id": strings.TrimSpace(slackUserID),
-		"force":         force,
-	}
-	raw, _ := json.Marshal(payload)
-	url := s.cfg.JoanneWelcomeTriggerURL + "/internal/joanne/humans-welcome/trigger"
-	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.cfg.JoanneWelcomeTriggerToken)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-	respRaw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	var out map[string]any
-	if err := json.Unmarshal(respRaw, &out); err != nil {
-		out = map[string]any{}
-		msg := strings.TrimSpace(string(respRaw))
-		if msg != "" {
-			out["error"] = msg
+
+	slackUserID = strings.TrimSpace(slackUserID)
+	dedupeKey := defaultHumansWelcomeDedupeKeyPrefix + slackUserID
+	if !force {
+		if _, err := s.rdb.Get(r.Context(), dedupeKey).Result(); err == nil {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":        "welcome already recorded for this user (set force=true to resend)",
+				"slackUserId":  slackUserID,
+				"profileEmail": email,
+			})
+			return
+		} else if err != redis.Nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
 		}
 	}
-	out["slackUserId"] = strings.TrimSpace(slackUserID)
-	out["profileEmail"] = email
-	writeJSON(w, resp.StatusCode, out)
+
+	api := slack.New(s.cfg.JoanneSlackBotToken)
+
+	rootText := fmt.Sprintf("Hey, welcome to the company <@%s>! We need you to accept our *terms of use* before you begin working with us. Open the thread on this message to read them.", slackUserID)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	_, rootTS, err := api.PostMessageContext(ctx, s.cfg.OnboardingChannelID, slack.MsgOptionText(rootText, false))
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("slack post welcome failed: %v", err)})
+		return
+	}
+	origin := strings.TrimSuffix(strings.TrimSpace(s.cfg.MakeACompanyAppBaseURL), "/")
+	if origin == "" {
+		origin = "http://localhost:3000"
+	}
+	threadSummary := runtime.HumansTermsThreadSummaryMrkdwn(origin)
+	blocks := runtime.BuildTermsAcceptanceBlocksWithSummary(s.cfg.OnboardingChannelID, slackUserID, strings.TrimSpace(rootTS), threadSummary)
+	threadTitle := "Terms of Use"
+	_, termsTS, err := api.PostMessageContext(ctx, s.cfg.OnboardingChannelID,
+		slack.MsgOptionText(threadTitle, false),
+		slack.MsgOptionTS(strings.TrimSpace(rootTS)),
+		slack.MsgOptionBlocks(blocks...),
+	)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": fmt.Sprintf("slack post terms thread failed: %v", err)})
+		return
+	}
+	if err := runtime.SetTermsSkillPendingWithClient(ctx, s.rdb, s.cfg.OnboardingChannelID, slackUserID, strings.TrimSpace(rootTS)); err != nil {
+		s.log.Printf("joanne welcome trigger redis terms pending failed slack_user=%s err=%v", slackUserID, err)
+	}
+	if err := s.rdb.Set(r.Context(), dedupeKey, "1", defaultHumansWelcomeDedupeTTL).Err(); err != nil {
+		s.log.Printf("joanne welcome trigger dedupe set failed slack_user=%s err=%v", slackUserID, err)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"channelId":    s.cfg.OnboardingChannelID,
+		"rootTs":       strings.TrimSpace(rootTS),
+		"termsTs":      strings.TrimSpace(termsTS),
+		"slackUserId":  slackUserID,
+		"profileEmail": email,
+	})
 }
 
 func (s *Server) listCompanyChannels(ctx context.Context) ([]companyChannel, error) {

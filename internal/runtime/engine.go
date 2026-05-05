@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bimross/agent-factory/internal/orchestratorevent"
+	"github.com/slack-go/slack"
 )
 
 // ThreadContextFunc optionally supplies Slack thread history (e.g. from
@@ -25,23 +26,26 @@ type Engine struct {
 	memory        *MemoryBank
 	threadContext ThreadContextFunc
 	remote        RemoteHandoffForwarder
+	// slackForEmployee resolves the posting bot's Slack API client (per EMPLOYEE_ID) for write tools like create-company.
+	slackForEmployee func(employeeID string) *slack.Client
 }
 
-func NewEngine(publisher StatusPublisher, handoff HandoffBus, tasks TaskStore, traces TraceStore, registry Registry, toolSpecs map[string]ToolSpec, provider ProviderConfig, memory *MemoryBank, threadContext ThreadContextFunc, remote RemoteHandoffForwarder) *Engine {
+func NewEngine(publisher StatusPublisher, handoff HandoffBus, tasks TaskStore, traces TraceStore, registry Registry, toolSpecs map[string]ToolSpec, provider ProviderConfig, memory *MemoryBank, threadContext ThreadContextFunc, remote RemoteHandoffForwarder, slackForEmployee func(string) *slack.Client) *Engine {
 	if toolSpecs == nil {
 		toolSpecs = map[string]ToolSpec{}
 	}
 	return &Engine{
-		publisher:     publisher,
-		handoff:       handoff,
-		tasks:         tasks,
-		traces:        traces,
-		registry:      registry,
-		toolSpecs:     toolSpecs,
-		provider:      provider,
-		memory:        memory,
-		threadContext: threadContext,
-		remote:        remote,
+		publisher:        publisher,
+		handoff:          handoff,
+		tasks:            tasks,
+		traces:           traces,
+		registry:         registry,
+		toolSpecs:        toolSpecs,
+		provider:         provider,
+		memory:           memory,
+		threadContext:    threadContext,
+		remote:           remote,
+		slackForEmployee: slackForEmployee,
 	}
 }
 
@@ -294,6 +298,29 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			return task, err
 		}
 		plan.FinalPayload = p
+	} else if capabilityID == "create-company" {
+		if err := e.publisher.PublishUpdate(task, "Creating company channel..."); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runCreateCompany(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
+	} else if capabilityID == "update-terms" {
+		if err := e.publisher.PublishUpdate(task, "Handling terms…"); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runUpdateTerms(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
+		plan.ProgressUpdates = nil
 	}
 	for _, update := range plan.ProgressUpdates {
 		if err := e.publisher.PublishUpdate(task, update); err != nil {

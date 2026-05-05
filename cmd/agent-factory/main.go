@@ -76,6 +76,8 @@ func main() {
 	if cleanupHandoff != nil {
 		defer cleanupHandoff()
 	}
+	slackClients := slackBotClientsFromEnv()
+	processEmp := normalizeID(os.Getenv("EMPLOYEE_ID"))
 	engine := runtime.NewEngine(
 		publisher,
 		acceptAllHandoffBus{},
@@ -87,13 +89,32 @@ func main() {
 		memoryBank,
 		threadContextFuncFromEnv(),
 		remoteForwarder,
+		func(emp string) *slack.Client {
+			id := normalizeID(emp)
+			if id != "" {
+				if c := slackClients[id]; c != nil {
+					return c
+				}
+			}
+			if processEmp != "" {
+				if c := slackClients[processEmp]; c != nil {
+					return c
+				}
+			}
+			for _, c := range slackClients {
+				if c != nil {
+					return c
+				}
+			}
+			return nil
+		},
 	)
 
 	switch appConfig.Mode {
 	case "demo":
 		runDemo(engine, store)
 	case "serve":
-		if err := runServe(appConfig, engine, handoffStore, publisher); err != nil {
+		if err := runServe(appConfig, engine, handoffStore, publisher, slackClients); err != nil {
 			log.Fatalf("serve: %v", err)
 		}
 	default:
@@ -153,11 +174,13 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 		fmt.Printf("trace1 seq=%d owner=%s capability=%s status=%s\n", entry.Sequence, entry.EmployeeID, entry.SkillID, entry.Status)
 	}
 
-	// Scenario 2: @joanne create-company stays on joanne.
+	// Scenario 2: @joanne create-company stays on joanne (needs Slack bot token + REDIS for full execution).
 	taskTwo := runtime.Task{
 		ID:           "bootstrap-task-2",
 		ThreadAnchor: "C123456:1746380200.000200",
 		TraceID:      "trace-bootstrap-2",
+		RequestText:  "create a company called legendz",
+		HumanUserID:  "U_OPERATOR",
 	}
 	ownedTaskTwo, err := engine.StartTask(taskTwo, "joanne")
 	if err != nil {
@@ -165,15 +188,16 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 	}
 	ownedTaskTwo, err = engine.ExecuteCapability(context.Background(), ownedTaskTwo, "create-company", nil)
 	if err != nil {
-		log.Fatalf("execute create-company: %v", err)
+		fmt.Printf("scenario2 create-company error (expected without real Slack/Redis in demo): %v\n", err)
+	} else {
+		fmt.Printf("scenario2 owner after completion: %s\n", ownedTaskTwo.OwnerEmployeeID)
 	}
-	fmt.Printf("scenario2 owner after completion: %s\n", ownedTaskTwo.OwnerEmployeeID)
 	for _, entry := range store.ListTrace(ownedTaskTwo.ID) {
 		fmt.Printf("trace2 seq=%d owner=%s capability=%s status=%s\n", entry.Sequence, entry.EmployeeID, entry.SkillID, entry.Status)
 	}
 }
 
-func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher) error {
+func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher, slackClients map[string]*slack.Client) error {
 	log.Printf("agent-factory serve mode employee=%s nats=%s stream=%s",
 		cfg.EmployeeID,
 		cfg.NatsURL,
@@ -182,8 +206,10 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *hando
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	startJoanneInteractionSocket(ctx, cfg.EmployeeID)
+
 	handler := func(ctx context.Context, payload []byte) error {
-		return handleOrchestratorPayload(ctx, cfg, engine, handoffStore, publisher, payload)
+		return handleOrchestratorPayload(ctx, cfg, engine, handoffStore, publisher, slackClients, payload)
 	}
 
 	errCh := make(chan error, 1)
@@ -211,7 +237,7 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *hando
 	}
 }
 
-func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher, payload []byte) error {
+func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher, slackClients map[string]*slack.Client, payload []byte) error {
 	var event orchestratorevent.EventV1
 	if err := json.Unmarshal(payload, &event); err != nil {
 		log.Printf("orchestrator payload parse failed: %v", err)
@@ -222,6 +248,12 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 	target := normalizeID(event.TargetEmployee)
 	if target != normalizeID(employeeID) {
 		log.Printf("orchestrator payload target mismatch expected=%s got=%s", employeeID, target)
+		return nil
+	}
+	if handled := maybeHandleHumansOperatorJoined(ctx, cfg, slackClients, event); handled {
+		return nil
+	}
+	if handled := maybeHandleJoanneInviteOnboardingHook(ctx, cfg, slackClients, event); handled {
 		return nil
 	}
 	if sp, ok := publisher.(*statusPublisher); ok {
@@ -308,6 +340,58 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		employeeID, taskID, traceID, kind)
 	_ = ctx
 	return nil
+}
+
+func maybeHandleHumansOperatorJoined(ctx context.Context, cfg runtime.AppConfig, slackClients map[string]*slack.Client, event orchestratorevent.EventV1) bool {
+	if normalizeID(cfg.EmployeeID) != "joanne" {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(event.InnerType), "humans_operator_joined") {
+		return false
+	}
+	api := slackClients["joanne"]
+	if api == nil {
+		api = slackClients[normalizeID(cfg.EmployeeID)]
+	}
+	if api == nil {
+		log.Printf("humans_operator_joined: skip reason=no_slack_client user=%s", strings.TrimSpace(event.Message.UserID))
+		return true
+	}
+	userID := strings.TrimSpace(event.Message.UserID)
+	if err := runtime.PostHumansChannelWelcome(ctx, api, userID); err != nil {
+		log.Printf("humans_operator_joined: welcome user=%s err=%v", userID, err)
+	} else {
+		log.Printf("humans_operator_joined: ok user=%s channel=%s", userID, strings.TrimSpace(event.Message.ChannelID))
+	}
+	return true
+}
+
+func maybeHandleJoanneInviteOnboardingHook(ctx context.Context, cfg runtime.AppConfig, slackClients map[string]*slack.Client, event orchestratorevent.EventV1) bool {
+	if normalizeID(cfg.EmployeeID) != "joanne" {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(event.InnerType), "member_joined_channel") {
+		return false
+	}
+	channelID := strings.TrimSpace(event.Message.ChannelID)
+	if channelID == "" {
+		return true
+	}
+	api := slackClients["joanne"]
+	if api == nil {
+		api = slackClients[normalizeID(cfg.EmployeeID)]
+	}
+	if api == nil {
+		log.Printf("joanne invite onboarding: skip channel=%s reason=no_slack_client", channelID)
+		return true
+	}
+	inviter := strings.TrimSpace(event.Message.UserID)
+	if err := runtime.HandleJoanneInvitedCompanyChannel(ctx, api, channelID, inviter); err != nil {
+		log.Printf("joanne invite onboarding: channel=%s inviter=%s err=%v", channelID, inviter, err)
+		return true
+	}
+	log.Printf("joanne invite onboarding: queued channel=%s inviter=%s", channelID, inviter)
+	return true
 }
 
 func appendGitHubNoToolContext(raw, employeeID string) string {
@@ -659,7 +743,10 @@ type statusPublisher struct {
 	processEmp string
 	waitEmoji  string
 	reacted    sync.Map // task ID -> struct{}; we added a waiting reaction for this task
-	botUserIDs map[string]string
+	// pipelineReacted tracks wait reactions this step places on the previous step's message.
+	// key: current task ID -> value: "channelID|messageTS".
+	pipelineReacted sync.Map
+	botUserIDs      map[string]string
 }
 
 func newStatusPublisherFromEnv() runtime.StatusPublisher {
@@ -824,6 +911,10 @@ func (s *statusPublisher) markPipelineChainWaiting(event orchestratorevent.Event
 	ref := slack.NewRefToMessage(channelID, targetTS)
 	if err := api.AddReactionContext(context.Background(), s.waitEmoji, ref); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "already_reacted") {
+			taskID := strings.TrimSpace(deriveTaskID(event))
+			if taskID != "" {
+				s.pipelineReacted.Store(taskID, channelID+"|"+targetTS)
+			}
 			return
 		}
 		log.Printf(
@@ -846,6 +937,10 @@ func (s *statusPublisher) markPipelineChainWaiting(event orchestratorevent.Event
 		targetTS,
 		s.waitEmoji,
 	)
+	taskID := strings.TrimSpace(deriveTaskID(event))
+	if taskID != "" {
+		s.pipelineReacted.Store(taskID, channelID+"|"+targetTS)
+	}
 }
 
 // threadContextFuncFromEnv returns a Slack thread transcript fetcher when
@@ -956,6 +1051,7 @@ func (s *statusPublisher) clearWaitingReaction(task runtime.Task) {
 	if api == nil || s.waitEmoji == "" || s.waitEmoji == "-" {
 		return
 	}
+	defer s.clearPipelineChainWaiting(task.ID, api)
 	if _, ok := s.reacted.LoadAndDelete(task.ID); !ok {
 		return
 	}
@@ -968,6 +1064,37 @@ func (s *statusPublisher) clearWaitingReaction(task runtime.Task) {
 	ctx := context.Background()
 	if err := api.RemoveReactionContext(ctx, s.waitEmoji, ref); err != nil {
 		log.Printf("waiting reaction remove emoji=%s task=%s: %v", s.waitEmoji, task.ID, err)
+	}
+}
+
+func (s *statusPublisher) clearPipelineChainWaiting(taskID string, api *slack.Client) {
+	if s == nil || api == nil {
+		return
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return
+	}
+	raw, ok := s.pipelineReacted.LoadAndDelete(taskID)
+	if !ok {
+		return
+	}
+	key, _ := raw.(string)
+	parts := strings.SplitN(strings.TrimSpace(key), "|", 2)
+	if len(parts) != 2 {
+		return
+	}
+	channelID := strings.TrimSpace(parts[0])
+	messageTS := strings.TrimSpace(parts[1])
+	if channelID == "" || messageTS == "" {
+		return
+	}
+	ref := slack.NewRefToMessage(channelID, messageTS)
+	if err := api.RemoveReactionContext(context.Background(), s.waitEmoji, ref); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no_reaction") {
+			return
+		}
+		log.Printf("pipeline: wait-reaction remove failed task=%s ts=%s err=%v", taskID, messageTS, err)
 	}
 }
 
@@ -997,18 +1124,29 @@ func (s *statusPublisher) PublishFinal(task runtime.Task, payload runtime.Render
 		threadTS = strings.TrimSpace(task.MessageTS)
 	}
 
-	blocks, fallback := slackrender.AgentReplyBlocks(text)
-	opts := []slack.MsgOption{
-		slack.MsgOptionText(fallback, false),
-	}
-	if len(blocks) > 0 {
-		opts = append(opts, slack.MsgOptionBlocks(blocks...))
+	var opts []slack.MsgOption
+	if len(payload.BlockKit) > 0 {
+		opts = []slack.MsgOption{
+			slack.MsgOptionText(text, false),
+			slack.MsgOptionBlocks(payload.BlockKit...),
+		}
+	} else {
+		blocks, fallback := slackrender.AgentReplyBlocks(text)
+		opts = []slack.MsgOption{
+			slack.MsgOptionText(fallback, false),
+		}
+		if len(blocks) > 0 {
+			opts = append(opts, slack.MsgOptionBlocks(blocks...))
+		}
 	}
 	if threadTS != "" {
 		opts = append(opts, slack.MsgOptionTS(threadTS))
 	}
 	if _, _, err := api.PostMessage(channelID, opts...); err != nil {
 		return fmt.Errorf("post Slack final message: %w", err)
+	}
+	if err := runtime.CommitTermsSkillPendingAnchor(context.Background(), payload.TermsSkillPending); err != nil {
+		log.Printf("status publisher: terms skill pending redis err=%v task=%s", err, task.ID)
 	}
 	return nil
 }

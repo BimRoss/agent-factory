@@ -10,14 +10,12 @@ func (createCompanyAdapter) CapabilityID() string {
 
 func (createCompanyAdapter) BuildPlan(task Task) CapabilityExecutionResult {
 	return CapabilityExecutionResult{
-		ProgressUpdates: []string{
-			"Collecting company slug and founder context...",
-			"Preparing company channel provisioning request...",
-		},
+		// Progress lives in engine.ExecuteCapability (PublishUpdate + runCreateCompany).
+		ProgressUpdates: nil,
 		FinalPayload: RenderPayload{
 			OutputID:     fmt.Sprintf("%s-create-company", task.ID),
-			FallbackText: "Company creation request prepared and ready for confirm/cancel flow.",
-			FinalSummary: "create-company prepared",
+			FallbackText: "",
+			FinalSummary: "create-company",
 			Transport:    "slack",
 		},
 	}

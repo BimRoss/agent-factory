@@ -2,7 +2,7 @@
 
 ## Why rebuild this layer
 
-MVP proved product value, but execution in `employee-factory` now mixes:
+MVP proved product value, but execution in the legacy runtime now mixes:
 
 - skill logic
 - routing logic
@@ -71,6 +71,6 @@ This allows simpler onboarding for new skill creators while preserving an escape
 ## Success criteria
 
 - parity feature coverage for existing employees/skills
-- lower routing code complexity than `employee-factory`
+- lower routing code complexity than the legacy runtime
 - consistent, contract-defined Slack output behavior across handoffs
 - deterministic final-post idempotency for async tasks

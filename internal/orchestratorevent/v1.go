@@ -14,6 +14,7 @@ type EventV1 struct {
 	RunID          string     `json:"run_id,omitempty"`
 	TriggerSource  string     `json:"trigger_source,omitempty"`
 	SlackEventID   string     `json:"slack_event_id,omitempty"`
+	InnerType      string     `json:"inner_type,omitempty"`
 	TargetEmployee string     `json:"target_employee"`
 	Decision       DecisionV1 `json:"decision"`
 	Message        MessageV1  `json:"message"`

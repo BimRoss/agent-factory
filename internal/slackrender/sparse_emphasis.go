@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-// Logic mirrors employee-factory/internal/slackformat/sparse_emphasis.go — keep behavior in sync.
+// Logic mirrors our Slack formatting emphasis behavior across runtimes.
 
 var sparseSlackMrkdwnBold = regexp.MustCompile(`\*[^*\n]+\*`)
 

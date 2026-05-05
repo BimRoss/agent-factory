@@ -8,7 +8,7 @@ import (
 )
 
 // GitHubEnvConfig holds repo + auth for GitHub REST calls (create-issue, etc.).
-// Token resolution (employee-factory–aligned): EMPLOYEE_GITHUB_TOKEN, then
+// Token resolution: EMPLOYEE_GITHUB_TOKEN, then
 // EMPLOYEE_ORG_GH_TOKEN (org-wide PAT, preferred over personal), then EMPLOYEE_PERSONAL_GH_TOKEN,
 // then global GITHUB_TOKEN, ORG_GH_TOKEN, PERSONAL_GH_TOKEN.
 type GitHubEnvConfig struct {

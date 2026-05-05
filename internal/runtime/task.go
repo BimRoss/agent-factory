@@ -1,6 +1,10 @@
 package runtime
 
-import "time"
+import (
+	"time"
+
+	"github.com/slack-go/slack"
+)
 
 type Task struct {
 	ID              string
@@ -33,6 +37,12 @@ type RenderPayload struct {
 	FallbackText string
 	FinalSummary string
 	Transport    string
+	// BlockKit, when non-empty, is posted as Slack blocks (with FallbackText as notification text)
+	// instead of slackrender.AgentReplyBlocks(FallbackText).
+	BlockKit []slack.Block
+	// TermsSkillPending, when set, enables employee-factory–style Redis skill_confirmation for terms_accept
+	// once the Slack final message posts successfully (see PublishFinal).
+	TermsSkillPending *TermsSkillPendingAnchor
 }
 
 type TaskStore interface {

@@ -57,6 +57,7 @@ func main() {
 		memoryBank,
 		nil,
 		nil,
+		nil,
 	)
 
 	task := runtime.Task{
