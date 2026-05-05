@@ -304,6 +304,9 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		return nil
 	}
 	orchestratorevent.EnsureRunAndTraceIDs(&event)
+	if skip, _ := runtime.ShouldSkipDuplicateOrchestratorPayload(ctx, event); skip {
+		return nil
+	}
 	employeeID := cfg.EmployeeID
 	target := normalizeID(event.TargetEmployee)
 	if target != normalizeID(employeeID) {
