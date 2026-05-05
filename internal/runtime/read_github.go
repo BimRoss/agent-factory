@@ -30,7 +30,7 @@ var (
 	reGitHubBlobURL    = regexp.MustCompile(`https?://github\.com/([^/\s]+)/([^/\s]+)/blob/([^/\s]+)/([^\s?#]+)`)
 	reOwnerRepoPath    = regexp.MustCompile(`\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.\-/]+)\b`)
 	reSlackUserMention = regexp.MustCompile(`<@[A-Z0-9]+>`)
-	reGitHubNoiseWords = regexp.MustCompile(`(?i)\b(can|could|would|should|please|you|your|our|my|the|a|an|to|for|at|about|look|check|scan|read|search|find|get|show|list|github|git|hub|repo|repos|repository|repositories|how|many|do|we|have|in|org|organization|count|what|know|tell|me|us)\b`)
+	reGitHubNoiseWords = regexp.MustCompile(`(?i)\b(can|could|would|should|please|you|your|our|my|the|a|an|to|for|at|about|look|check|scan|read|search|find|get|show|list|see|are|able|is|am|be|been|being|access|github|git|hub|repo|repos|repository|repositories|how|many|do|we|have|in|on|org|organization|count|what|know|tell|me|us)\b`)
 	reRepoSlugToken    = regexp.MustCompile(`\b([A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+)\b`)
 )
 
@@ -687,25 +687,27 @@ func parseReadGitHubRequest(raw string, cfg GitHubEnvConfig, defaultMode string)
 	}
 
 	if req.Mode == "" {
-		switch {
-		case req.Path != "":
-			req.Mode = readGitHubModeFileGet
-		case strings.Contains(rawLower, "code search"), strings.HasPrefix(strings.ToLower(strings.TrimSpace(raw)), "code:"):
-			req.Mode = readGitHubModeCodeSearch
-		case strings.Contains(rawLower, "repo meta"), strings.Contains(rawLower, "repository metadata"):
-			req.Mode = readGitHubModeRepoMeta
-		case strings.Contains(rawLower, "pull request"), strings.Contains(rawLower, "pull requests"), strings.Contains(rawLower, " prs "):
-			req.Mode = readGitHubModePRs
-		case strings.Contains(rawLower, "commit"), strings.Contains(rawLower, "commits"):
-			req.Mode = readGitHubModeCommits
-		case strings.Contains(rawLower, "branch"), strings.Contains(rawLower, "branches"):
-			req.Mode = readGitHubModeBranches
-		case strings.Contains(rawLower, "tree"), strings.Contains(rawLower, "directory"):
-			req.Mode = readGitHubModeTree
-		case strings.TrimSpace(defaultMode) != "":
+		if strings.TrimSpace(defaultMode) != "" {
 			req.Mode = normalizeReadGitHubMode(defaultMode)
-		default:
-			req.Mode = readGitHubModeRepoSearch
+		} else {
+			switch {
+			case req.Path != "":
+				req.Mode = readGitHubModeFileGet
+			case strings.Contains(rawLower, "code search"), strings.HasPrefix(strings.ToLower(strings.TrimSpace(raw)), "code:"):
+				req.Mode = readGitHubModeCodeSearch
+			case strings.Contains(rawLower, "repo meta"), strings.Contains(rawLower, "repository metadata"):
+				req.Mode = readGitHubModeRepoMeta
+			case strings.Contains(rawLower, "pull request"), strings.Contains(rawLower, "pull requests"), strings.Contains(rawLower, " prs "):
+				req.Mode = readGitHubModePRs
+			case strings.Contains(rawLower, "commit"), strings.Contains(rawLower, "commits"):
+				req.Mode = readGitHubModeCommits
+			case strings.Contains(rawLower, "branch"), strings.Contains(rawLower, "branches"):
+				req.Mode = readGitHubModeBranches
+			case strings.Contains(rawLower, "tree"), strings.Contains(rawLower, "directory"):
+				req.Mode = readGitHubModeTree
+			default:
+				req.Mode = readGitHubModeRepoSearch
+			}
 		}
 	}
 

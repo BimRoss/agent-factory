@@ -273,7 +273,7 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 
 	taskID := deriveTaskID(event)
 	traceID := firstNonEmpty(event.EffectiveTraceID(), taskID)
-	anchorTS := strings.TrimSpace(firstNonEmpty(event.Message.ThreadTS, event.Message.MessageTS))
+	anchorTS := effectiveThreadTS(event.Message)
 	threadAnchor := strings.TrimSpace(event.Message.ChannelID)
 	if threadAnchor != "" && anchorTS != "" {
 		threadAnchor += ":" + anchorTS
@@ -283,9 +283,9 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		ID:           taskID,
 		TraceID:      traceID,
 		ThreadAnchor: threadAnchor,
-		RequestText:  strings.TrimSpace(event.Message.Text),
+		RequestText:  buildTaskRequestText(event),
 		ChannelID:    strings.TrimSpace(event.Message.ChannelID),
-		ThreadTS:     strings.TrimSpace(event.Message.ThreadTS),
+		ThreadTS:     anchorTS,
 		MessageTS:    strings.TrimSpace(event.Message.MessageTS),
 		HumanUserID:  strings.TrimSpace(event.Message.UserID),
 		Mode:         firstNonEmpty(modeFromDecision(event), "conversation"),
@@ -589,7 +589,7 @@ func handleHandoffContinuation(ctx context.Context, cfg runtime.AppConfig, engin
 
 	taskID := deriveTaskID(merge)
 	traceID := firstNonEmpty(merge.EffectiveTraceID(), taskID)
-	anchorTS := strings.TrimSpace(firstNonEmpty(merge.Message.ThreadTS, merge.Message.MessageTS))
+	anchorTS := effectiveThreadTS(merge.Message)
 	threadAnchor := strings.TrimSpace(merge.Message.ChannelID)
 	if threadAnchor != "" && anchorTS != "" {
 		threadAnchor += ":" + anchorTS
@@ -599,9 +599,9 @@ func handleHandoffContinuation(ctx context.Context, cfg runtime.AppConfig, engin
 		ID:           taskID,
 		TraceID:      traceID,
 		ThreadAnchor: threadAnchor,
-		RequestText:  strings.TrimSpace(merge.Message.Text),
+		RequestText:  buildTaskRequestText(merge),
 		ChannelID:    strings.TrimSpace(merge.Message.ChannelID),
-		ThreadTS:     strings.TrimSpace(merge.Message.ThreadTS),
+		ThreadTS:     anchorTS,
 		MessageTS:    strings.TrimSpace(merge.Message.MessageTS),
 		HumanUserID:  strings.TrimSpace(merge.Message.UserID),
 		Mode:         firstNonEmpty(modeFromDecision(merge), "conversation"),
@@ -682,6 +682,9 @@ func maybePublishPipelineContinuation(cfg runtime.AppConfig, current orchestrato
 	out.Decision.ToolID = strings.TrimSpace(next.ToolID)
 	out.Decision.Employees = []string{nextTarget}
 	out.Decision.PrimaryEmployee = nextTarget
+	if strings.TrimSpace(out.Message.ThreadTS) == "" {
+		out.Message.ThreadTS = effectiveThreadTS(current.Message)
+	}
 	out.Message.Text = strings.TrimSpace(next.StepText)
 	if out.Message.Text == "" {
 		out.Message.Text = strings.TrimSpace(current.Message.PipelineAnchorText)
@@ -733,6 +736,25 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func effectiveThreadTS(msg orchestratorevent.MessageV1) string {
+	return strings.TrimSpace(firstNonEmpty(msg.ThreadTS, msg.MessageTS))
+}
+
+func buildTaskRequestText(event orchestratorevent.EventV1) string {
+	stepText := strings.TrimSpace(event.Message.Text)
+	anchorText := strings.TrimSpace(event.Message.PipelineAnchorText)
+	if stepText == "" {
+		return anchorText
+	}
+	if !strings.EqualFold(strings.TrimSpace(event.Decision.ExecutionMode), orchestratorevent.ExecutionModePipeline) {
+		return stepText
+	}
+	if event.Decision.PipelineStepIndex <= 0 || anchorText == "" || strings.EqualFold(anchorText, stepText) {
+		return stepText
+	}
+	return "Current pipeline step request:\n" + stepText + "\n\nOriginal pipeline anchor message:\n" + anchorText
 }
 
 type statusPublisher struct {

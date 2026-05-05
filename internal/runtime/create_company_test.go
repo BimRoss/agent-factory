@@ -87,23 +87,13 @@ func TestCompanyPostCreateCreatedMrkdwn(t *testing.T) {
 	}
 }
 
-func TestCompanyPostCreateEpilogue_NoInvitedLine(t *testing.T) {
-	t.Setenv("MAKEACOMPANY_APP_BASE_URL", "")
-	t.Setenv("APP_BASE_URL", "")
-	t.Setenv("NEXT_PUBLIC_SITE_URL", "")
-	got := companyPostCreateEpilogue("C123", "this-is-so-sweet")
-	if got != "Created: <#C123|this-is-so-sweet>" {
-		t.Fatalf("unexpected epilogue: %q", got)
-	}
-}
-
-func TestCompanyPostCreateEpilogue_IncludesDashboardLink(t *testing.T) {
+func TestCompanyPostCreateCreatedMrkdwn_NoDashboardEvenWhenURLConfigured(t *testing.T) {
 	t.Setenv("MAKEACOMPANY_APP_BASE_URL", "http://localhost:3000")
-	got := companyPostCreateEpilogue("C123", "this-is-so-sweet")
-	if !strings.Contains(got, "Created: <#C123|this-is-so-sweet>") {
-		t.Fatalf("missing created line: %q", got)
+	got := companyPostCreateCreatedMrkdwn("C123", "this-is-so-sweet")
+	if got != "Created: <#C123|this-is-so-sweet>" {
+		t.Fatalf("unexpected: %q", got)
 	}
-	if !strings.Contains(got, "Dashboard: <http://localhost:3000/C123|Open founder dashboard>") {
-		t.Fatalf("missing dashboard link: %q", got)
+	if strings.Contains(strings.ToLower(got), "dashboard") {
+		t.Fatalf("create-company fallback should not mention dashboard: %q", got)
 	}
 }

@@ -240,7 +240,7 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 		return task, err
 	}
 	plan := capabilityExecutionPlan(task, capabilityID, e.toolSpecs)
-	if capabilityID == "create-issue" {
+	if isCreateIssueCapability(capabilityID) {
 		// PublishUpdate before the long path so the status publisher can add the waiting
 		// reaction (e.g. hourglass) to the trigger message while GitHub + model work run.
 		if err := e.publisher.PublishUpdate(task, "Gathering thread context and drafting the GitHub issue…"); err != nil {
@@ -391,4 +391,13 @@ func displayEmployeeName(employeeID string) string {
 		return strings.ToUpper(id)
 	}
 	return strings.ToUpper(id[:1]) + id[1:]
+}
+
+func isCreateIssueCapability(capabilityID string) bool {
+	switch normalizeID(capabilityID) {
+	case "create-issue", "create-github-issue":
+		return true
+	default:
+		return false
+	}
 }

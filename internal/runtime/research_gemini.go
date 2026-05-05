@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -29,6 +30,8 @@ type GeminiConversationResult struct {
 	Text      string
 	Citations []string
 }
+
+var multiSpeakerLabelRE = regexp.MustCompile(`(?im)^(?:\*{1,2})?\s*(?:teammate|colleague|colleage|speaker|side)\s*([a-c1-3]|[ivx]+)\s*:\s*`)
 
 // runGeminiConversation calls the model with memory + thread context. There is no
 // hardcoded user-visible fallback—every posted reply should come from the model.
@@ -116,6 +119,9 @@ func runGeminiConversationRecovery(ctx context.Context, provider ProviderConfig,
 	if text == "" {
 		return GeminiConversationResult{}, fmt.Errorf("gemini recovery returned empty text")
 	}
+	if looksLikeMultiSpeakerReply(text) {
+		return GeminiConversationResult{}, fmt.Errorf("gemini recovery returned multi-speaker roleplay")
+	}
 	return GeminiConversationResult{Text: text, Citations: groundingCitationsFromParsed(parsed)}, nil
 }
 
@@ -150,6 +156,9 @@ func runGeminiConversationMinimal(ctx context.Context, provider ProviderConfig, 
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return GeminiConversationResult{}, fmt.Errorf("gemini minimal returned empty text")
+	}
+	if looksLikeMultiSpeakerReply(text) {
+		return GeminiConversationResult{}, fmt.Errorf("gemini minimal returned multi-speaker roleplay")
 	}
 	return GeminiConversationResult{Text: text}, nil
 }
@@ -260,6 +269,9 @@ func runGeminiConversationOnce(ctx context.Context, provider ProviderConfig, emp
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return GeminiConversationResult{}, fmt.Errorf("gemini returned empty conversation candidate")
+	}
+	if looksLikeMultiSpeakerReply(text) {
+		return GeminiConversationResult{}, fmt.Errorf("gemini returned multi-speaker roleplay")
 	}
 	return GeminiConversationResult{
 		Text:      text,
@@ -421,6 +433,7 @@ Voice (non-negotiable):
 - Do not open with praise or hype: avoid leading with words/phrases like “great,” “nice,” “love,” “excited,” “amazing,” “strong signal,” “great signal,” “nice direction,” or calling their note a “signal” or “direction” unless they asked for directional feedback.
 - Avoid motivational coaching and cheerleading unless they explicitly asked for morale. No fake positivity to “balance” critique.
 - Do not paste your role label (“From an operations lens…”) unless it genuinely disambiguates; prefer direct wording.
+- You are exactly one speaker in this reply. Never simulate multiple participants or output role labels like "Teammate A:", "Colleague B:", or "Side 1:".
 `)
 }
 
@@ -458,4 +471,18 @@ func firstCandidateFinishReason(parsed geminiGenerateResponse) string {
 		return ""
 	}
 	return strings.TrimSpace(parsed.Candidates[0].FinishReason)
+}
+
+func looksLikeMultiSpeakerReply(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	matches := multiSpeakerLabelRE.FindAllStringSubmatch(text, -1)
+	if len(matches) >= 2 {
+		return true
+	}
+	if len(matches) == 1 {
+		return true
+	}
+	return false
 }

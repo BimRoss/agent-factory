@@ -1,8 +1,11 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/bimross/agent-factory/internal/orchestratorevent"
 )
 
 func TestIsGitHubLikelyFollowUp(t *testing.T) {
@@ -47,4 +50,60 @@ func TestIsReadGitHubCapabilityID(t *testing.T) {
 	if isReadGitHubCapabilityID("read-web") {
 		t.Fatalf("did not expect read-web to be detected as github capability")
 	}
+}
+
+func TestEffectiveThreadTS(t *testing.T) {
+	msg := orchestratorevent.MessageV1{
+		ThreadTS:  "177.100",
+		MessageTS: "177.200",
+	}
+	if got := effectiveThreadTS(msg); got != "177.100" {
+		t.Fatalf("effectiveThreadTS() = %q, want thread ts", got)
+	}
+	msg.ThreadTS = ""
+	if got := effectiveThreadTS(msg); got != "177.200" {
+		t.Fatalf("effectiveThreadTS() = %q, want message ts fallback", got)
+	}
+}
+
+func TestBuildTaskRequestText_PipelineFollowupIncludesAnchor(t *testing.T) {
+	event := orchestratorevent.EventV1{
+		Decision: orchestratorevent.DecisionV1{
+			ExecutionMode:     orchestratorevent.ExecutionModePipeline,
+			PipelineStepIndex: 3,
+		},
+		Message: orchestratorevent.MessageV1{
+			Text:               "summarize what everyone said",
+			PipelineAnchorText: "<!here> each of you should come up with ONE recommendation and then <@UTIM> summarize what everyone said",
+		},
+	}
+	got := buildTaskRequestText(event)
+	if got == event.Message.Text {
+		t.Fatalf("expected follow-up step to include pipeline anchor context, got only step text: %q", got)
+	}
+	if !containsAll(got, "Current pipeline step request:", "Original pipeline anchor message:") {
+		t.Fatalf("missing expected labels in payload: %q", got)
+	}
+}
+
+func TestBuildTaskRequestText_NonPipelineUnchanged(t *testing.T) {
+	event := orchestratorevent.EventV1{
+		Decision: orchestratorevent.DecisionV1{ExecutionMode: ""},
+		Message: orchestratorevent.MessageV1{
+			Text:               "what should we do tomorrow?",
+			PipelineAnchorText: "ignored anchor",
+		},
+	}
+	if got := buildTaskRequestText(event); got != "what should we do tomorrow?" {
+		t.Fatalf("non-pipeline request should stay unchanged, got %q", got)
+	}
+}
+
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

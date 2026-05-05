@@ -102,6 +102,42 @@ func TestParseReadGitHubRequestNaturalReposQuestionDefaultsToOrgQuery(t *testing
 	}
 }
 
+func TestParseReadGitHubRequestWhatReposSeeOnGitHubDefaultsToOrgQuery(t *testing.T) {
+	cfg := GitHubEnvConfig{Owner: "BimRoss"}
+	raw := "<@U0ATE4W7494> what repos can you see on github?"
+	req := parseReadGitHubRequest(raw, cfg, readGitHubModeRepoSearch)
+	if req.Query != "org:BimRoss" {
+		t.Fatalf("expected org default query, got %q", req.Query)
+	}
+	if req.Mode != readGitHubModeRepoSearch {
+		t.Fatalf("expected mode %q, got %q", readGitHubModeRepoSearch, req.Mode)
+	}
+}
+
+func TestParseReadGitHubRequestAreYouAbleToReadGitHubDefaultsToOrgQuery(t *testing.T) {
+	cfg := GitHubEnvConfig{Owner: "BimRoss"}
+	raw := "<@U0ATE4W7494> are you able to read github?"
+	req := parseReadGitHubRequest(raw, cfg, readGitHubModeRepoSearch)
+	if req.Query != "org:BimRoss" {
+		t.Fatalf("expected org default query, got %q", req.Query)
+	}
+	if req.Mode != readGitHubModeRepoSearch {
+		t.Fatalf("expected mode %q, got %q", readGitHubModeRepoSearch, req.Mode)
+	}
+}
+
+func TestParseReadGitHubRequestReposYouHaveAccessToDefaultsToOrgQuery(t *testing.T) {
+	cfg := GitHubEnvConfig{Owner: "BimRoss"}
+	raw := "<@U0ATGEYJ18T> what can you tell me about the github repos you have access to?"
+	req := parseReadGitHubRequest(raw, cfg, readGitHubModeRepoSearch)
+	if req.Query != "org:BimRoss" {
+		t.Fatalf("expected org default query, got %q", req.Query)
+	}
+	if req.Mode != readGitHubModeRepoSearch {
+		t.Fatalf("expected mode %q, got %q", readGitHubModeRepoSearch, req.Mode)
+	}
+}
+
 func TestParseReadGitHubRequestAllReposQuestionDefaultsToOrgQuery(t *testing.T) {
 	cfg := GitHubEnvConfig{Owner: "BimRoss"}
 	raw := "<@U0ATGEYJ18T> tell me all our repositories"
@@ -138,6 +174,15 @@ func TestParseReadGitHubRequestRepoCountQueryDefaultsToUserScope(t *testing.T) {
 	req := parseReadGitHubRequest(raw, cfg, readGitHubModeRepoSearch)
 	if req.Query != "user:grantfoster" {
 		t.Fatalf("expected user default query, got %q", req.Query)
+	}
+}
+
+func TestParseReadGitHubRequestTreeCapabilityRespectsDefaultMode(t *testing.T) {
+	cfg := GitHubEnvConfig{Owner: "BimRoss"}
+	raw := "owner: BimRoss\nrepo: agent-factory\npath: internal/runtime"
+	req := parseReadGitHubRequest(raw, cfg, readGitHubModeTree)
+	if req.Mode != readGitHubModeTree {
+		t.Fatalf("expected mode %q, got %q", readGitHubModeTree, req.Mode)
 	}
 }
 

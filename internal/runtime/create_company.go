@@ -96,7 +96,7 @@ func (e *Engine) runCreateCompany(ctx context.Context, task Task) (RenderPayload
 		return RenderPayload{}, fmt.Errorf("create-company: %w", err)
 	}
 
-	fallback := companyPostCreateEpilogue(cid, channelObj.Name)
+	fallback := companyPostCreateCreatedMrkdwn(cid, channelObj.Name)
 	return RenderPayload{
 		OutputID:     fmt.Sprintf("%s-create-company", task.ID),
 		FallbackText: fallback,
@@ -765,15 +765,6 @@ func companyPostCreateCreatedMrkdwn(channelID, channelName string) string {
 		created = "(channel)"
 	}
 	return fmt.Sprintf("Created: %s", created)
-}
-
-func companyPostCreateEpilogue(channelID, channelName string) string {
-	cid := strings.TrimSpace(channelID)
-	out := companyPostCreateCreatedMrkdwn(cid, strings.TrimSpace(channelName))
-	if dashboardURL := strings.TrimSpace(companyPortalDashboardURL(cid)); dashboardURL != "" {
-		out += fmt.Sprintf("\nDashboard: <%s|Open founder dashboard>", dashboardURL)
-	}
-	return out
 }
 
 func postCompanyOnboardingKickoff(ctx context.Context, api *slack.Client, channelID, channelName string, ownerUserIDs []string) error {
