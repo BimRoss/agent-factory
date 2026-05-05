@@ -1,9 +1,9 @@
 # Local "core" stack: Slack → NATS → agent bots + makeacompany admin UI, plus **cold-start style loops** that
 # mirror prod CronJobs: Slack user + member-channel snapshots (curl → makeacompany-backend internal routes) and
-# channel-knowledge harvest. The **employee-factory repo is deprecated** (runtime is **agent-factory**); until the
-# refresh binary ships from a successor image, compose still runs `/app/channel-knowledge-refresh` from the legacy
-# **geeemoney/employee-factory** image (same as prod `channel-scraper`). Pin `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` to a
-# tag whose binary writes `agent-factory:*` digest keys (see README "Core local stack").
+# channel-knowledge harvest. The **employee-factory repo is deprecated** (runtime is **agent-factory**); compose
+# builds `deploy/channel-knowledge-refresh-loop/` to copy `/app/channel-knowledge-refresh` from legacy
+# **geeemoney/employee-factory** into debian:bookworm-slim (upstream tags are often distroless — no `/bin/sh`).
+# `CHANNEL_KNOWLEDGE_REFRESH_IMAGE` selects the upstream tag; binary must write `agent-factory:*` digest keys.
 services:
   nats:
     profiles: ["local"]
@@ -496,7 +496,8 @@ services:
   # Mirrors makeacompany-ai CronJobs `makeacompany-ai-slack-users-scraper` + `makeacompany-ai-slack-member-channels-scraper`.
   makeacompany-slack-snapshots:
     profiles: ["local"]
-    image: curlimages/curl:8.5.0
+    # Alpine has /bin/sh; install curl once at start (avoids scratch/minimal images without a shell).
+    image: alpine:3.21
     restart: unless-stopped
     depends_on:
       - makeacompany-backend
@@ -508,6 +509,7 @@ services:
       - /bin/sh
       - -c
       - |
+        apk add --no-cache curl >/dev/null
         set -eu
         echo "makeacompany-slack-snapshots: waiting $$SNAPSHOT_BOOT_DELAY_SEC s for backend..."
         sleep "$$SNAPSHOT_BOOT_DELAY_SEC"
@@ -527,12 +529,17 @@ services:
           sleep "$$INTERVAL"
         done
 
-  # Legacy image only: employee-factory repo is deprecated; this mirrors prod `channel-scraper` until refresh ships elsewhere.
+  # Legacy binary from employee-factory image (often distroless — no /bin/sh); local shim Dockerfile adds shell + loop.
   channel-knowledge-refresh:
     profiles: ["local"]
     # CI pushes linux/amd64 only; Apple Silicon needs explicit platform to pull/run.
     platform: linux/amd64
-    image: ${CHANNEL_KNOWLEDGE_REFRESH_IMAGE:-geeemoney/employee-factory:0.15.23}
+    image: agent-factory-channel-knowledge-refresh:local
+    build:
+      context: .
+      dockerfile: deploy/channel-knowledge-refresh-loop/Dockerfile
+      args:
+        UPSTREAM_IMAGE: ${CHANNEL_KNOWLEDGE_REFRESH_IMAGE:-geeemoney/employee-factory:0.15.23}
     restart: unless-stopped
     depends_on:
       - redis
@@ -558,18 +565,6 @@ services:
       CHANNEL_KNOWLEDGE_CHANNEL_IDS: ${CHANNEL_KNOWLEDGE_CHANNEL_IDS:-}
       # Optional OpenRouter key for post-digest “company pulse” (same as prod CronJob secretRef optional).
       JOANNE_OR_KEY: ${JOANNE_OR_KEY:-}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        INTERVAL="$$CHANNEL_KNOWLEDGE_REFRESH_INTERVAL_SEC"
-        echo "channel-knowledge-refresh: loop every $$INTERVAL s"
-        while true; do
-          /app/channel-knowledge-refresh \
-            || echo "channel-knowledge-refresh: non-zero exit (retrying after sleep)"
-          sleep "$$INTERVAL"
-        done
 
 volumes:
   slack_orchestrator_gomod:
