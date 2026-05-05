@@ -39,6 +39,8 @@ var (
 	reGitHubWorkCue     = regexp.MustCompile(`(?i)\b(?:commits?|pull\s+requests?|prs|branches?|repositories?|\brepos?\b)\b`)
 	reHyphenatedNameCue = regexp.MustCompile(`\b[A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+\b`)
 	githubThreadHints   = newThreadCapabilityHints(defaultGitHubFollowupStickyTTL())
+	// Hard replay barrier: drop any inbound Slack event older than process startup (minus small skew).
+	orchestratorIngressNotBefore = computeOrchestratorIngressNotBefore(time.Now().UTC())
 )
 
 func main() {
@@ -303,14 +305,16 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		log.Printf("orchestrator payload parse failed: %v", err)
 		return nil
 	}
-	if stale, age, cutoff := shouldDropStaleOrchestratorEvent(event); stale {
+	if stale, reason, age, cutoff := shouldDropStaleOrchestratorEvent(event); stale {
 		log.Printf(
-			"orchestrator payload drop stale target=%s channel=%s message_ts=%s age=%s cutoff=%s",
+			"orchestrator payload drop stale target=%s channel=%s message_ts=%s reason=%s age=%s cutoff=%s not_before=%s",
 			normalizeID(event.TargetEmployee),
 			strings.TrimSpace(event.Message.ChannelID),
 			strings.TrimSpace(firstNonEmpty(event.Message.MessageTS, event.Message.ThreadTS)),
+			reason,
 			age,
 			cutoff,
+			orchestratorIngressNotBefore.Format(time.RFC3339),
 		)
 		return nil
 	}
@@ -858,25 +862,26 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func shouldDropStaleOrchestratorEvent(event orchestratorevent.EventV1) (bool, time.Duration, time.Duration) {
+func shouldDropStaleOrchestratorEvent(event orchestratorevent.EventV1) (bool, string, time.Duration, time.Duration) {
 	cutoff := orchestratorMaxEventAge()
+	evtAt, ok := eventTimestamp(event)
+	if !ok {
+		return false, "", 0, cutoff
+	}
+	if !orchestratorIngressNotBefore.IsZero() && evtAt.Before(orchestratorIngressNotBefore) {
+		return true, "before_startup_barrier", time.Since(evtAt), cutoff
+	}
 	if cutoff <= 0 {
-		return false, 0, cutoff
+		return false, "", 0, cutoff
 	}
-	tsRaw := strings.TrimSpace(firstNonEmpty(event.Message.MessageTS, event.Message.ThreadTS))
-	if tsRaw == "" {
-		return false, 0, cutoff
-	}
-	sec, err := strconv.ParseFloat(tsRaw, 64)
-	if err != nil || sec <= 0 {
-		return false, 0, cutoff
-	}
-	evtAt := time.Unix(int64(sec), int64((sec-float64(int64(sec)))*float64(time.Second)))
 	age := time.Since(evtAt)
 	if age < 0 {
-		return false, age, cutoff
+		return false, "", age, cutoff
 	}
-	return age > cutoff, age, cutoff
+	if age > cutoff {
+		return true, "older_than_max_age", age, cutoff
+	}
+	return false, "", age, cutoff
 }
 
 func orchestratorMaxEventAge() time.Duration {
@@ -890,6 +895,37 @@ func orchestratorMaxEventAge() time.Duration {
 		return 6 * time.Hour
 	}
 	return time.Duration(sec) * time.Second
+}
+
+func orchestratorReplayStartupGrace() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("ORCHESTRATOR_REPLAY_STARTUP_GRACE_SEC"))
+	if raw == "" {
+		return 15 * time.Second
+	}
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec < 0 {
+		return 15 * time.Second
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func computeOrchestratorIngressNotBefore(now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.Add(-orchestratorReplayStartupGrace())
+}
+
+func eventTimestamp(event orchestratorevent.EventV1) (time.Time, bool) {
+	tsRaw := strings.TrimSpace(firstNonEmpty(event.Message.MessageTS, event.Message.ThreadTS))
+	if tsRaw == "" {
+		return time.Time{}, false
+	}
+	sec, err := strconv.ParseFloat(tsRaw, 64)
+	if err != nil || sec <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(sec), int64((sec-float64(int64(sec)))*float64(time.Second))), true
 }
 
 func effectiveThreadTS(msg orchestratorevent.MessageV1) string {

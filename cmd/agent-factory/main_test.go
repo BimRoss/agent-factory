@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -119,4 +120,47 @@ func containsAll(s string, subs ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestShouldDropStaleOrchestratorEvent_StartupBarrier(t *testing.T) {
+	orig := orchestratorIngressNotBefore
+	defer func() { orchestratorIngressNotBefore = orig }()
+
+	now := time.Now().UTC()
+	orchestratorIngressNotBefore = now
+	ev := orchestratorevent.EventV1{
+		Message: orchestratorevent.MessageV1{
+			MessageTS: formatSlackTS(now.Add(-2 * time.Minute)),
+		},
+	}
+	stale, reason, _, _ := shouldDropStaleOrchestratorEvent(ev)
+	if !stale {
+		t.Fatalf("expected stale=true for message older than startup barrier")
+	}
+	if reason != "before_startup_barrier" {
+		t.Fatalf("unexpected reason %q", reason)
+	}
+}
+
+func TestShouldDropStaleOrchestratorEvent_AllowsFreshMessage(t *testing.T) {
+	orig := orchestratorIngressNotBefore
+	defer func() { orchestratorIngressNotBefore = orig }()
+
+	now := time.Now().UTC()
+	orchestratorIngressNotBefore = now.Add(-10 * time.Second)
+	ev := orchestratorevent.EventV1{
+		Message: orchestratorevent.MessageV1{
+			MessageTS: formatSlackTS(now),
+		},
+	}
+	stale, reason, _, _ := shouldDropStaleOrchestratorEvent(ev)
+	if stale {
+		t.Fatalf("expected fresh message to pass, reason=%q", reason)
+	}
+}
+
+func formatSlackTS(t time.Time) string {
+	sec := t.Unix()
+	nano := t.Nanosecond() / 1000
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%d.%06d", sec, nano), "0"), ".")
 }
