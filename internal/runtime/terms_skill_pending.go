@@ -11,11 +11,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Mirrors employee-factory internal/slackbot/write_flow_confirmation.go Redis keys for terms_accept.
+// Skill confirmation keys use agent-factory:* (same layout as legacy employee-factory write_flow_confirmation).
 const (
 	humansTermsConfirmTTL            = 7 * 24 * time.Hour
 	writeEmailConfirmTTL             = 20 * time.Minute
-	skillConfirmationRedisPrefixEF   = "employee-factory:skill_confirmation"
+	skillConfirmationRedisPrefix     = "agent-factory:skill_confirmation"
 	emailPendingPayloadRedisPrefix   = "agent-factory:create_email_pending_payload"
 	skillConfirmationRedisOpTimeout  = 750 * time.Millisecond
 	termsSkillConfirmationExpiredMsg = "This action has expired or was already completed."
@@ -48,16 +48,16 @@ func threadFlowPendingKey(channel, requestUserID, threadTS string) string {
 	return strings.TrimSpace(channel) + "|" + strings.TrimSpace(requestUserID) + "|" + strings.TrimSpace(threadTS)
 }
 
-// TermsSkillConfirmationRedisKey matches employee-factory skillConfirmationRedisKey(task=terms_accept, ...).
+// TermsSkillConfirmationRedisKey builds the Redis key for terms_accept pending state.
 func TermsSkillConfirmationRedisKey(channelID, requestUserID, threadTS string) string {
 	inner := skillConfirmationTaskTermsWire + "|" + threadFlowPendingKey(channelID, requestUserID, threadTS)
-	return skillConfirmationRedisPrefixEF + ":" + inner
+	return skillConfirmationRedisPrefix + ":" + inner
 }
 
-// EmailSkillConfirmationRedisKey matches employee-factory skillConfirmationRedisKey(task=email_send, ...).
+// EmailSkillConfirmationRedisKey builds the Redis key for email_send pending state.
 func EmailSkillConfirmationRedisKey(channelID, requestUserID, threadTS string) string {
 	inner := skillConfirmationTaskEmailWire + "|" + threadFlowPendingKey(channelID, requestUserID, threadTS)
-	return skillConfirmationRedisPrefixEF + ":" + inner
+	return skillConfirmationRedisPrefix + ":" + inner
 }
 
 func emailPendingPayloadRedisKey(channelID, requestUserID, threadTS string) string {
