@@ -408,7 +408,8 @@ func (s *Server) handleJoanneWelcomeTrigger(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	force := true
+	// Default false so repeated admin clicks (or double proxy) do not spam #onboarding; set force=true to resend.
+	force := false
 	if body.Force != nil {
 		force = *body.Force
 	}
