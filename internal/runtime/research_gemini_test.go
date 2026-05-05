@@ -64,8 +64,8 @@ func TestConversationSystemInstructionBindsEmployeeIdentity(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		employeeID string
-		mustContain []string
+		employeeID          string
+		mustContain         []string
 		mustNotHaveRossLead bool // true when instruction should not open as "You are Ross" (non-ross)
 	}{
 		{employeeID: "joanne", mustContain: []string{"Joanne", "executive operations"}, mustNotHaveRossLead: true},
