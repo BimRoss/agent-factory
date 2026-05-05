@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -204,6 +207,54 @@ func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
 	}
 }
 
+// startWorkerStatusHTTPServer binds HTTP_ADDR (default :8080) for Kubernetes /health and /readyz.
+// Without it, probes to :8080 get connection refused and pods never become Ready.
+func startWorkerStatusHTTPServer(ctx context.Context, natsURL string) {
+	addr := strings.TrimSpace(os.Getenv("HTTP_ADDR"))
+	if addr == "" {
+		addr = ":8080"
+	}
+	ready := func() bool {
+		u, err := url.Parse(strings.TrimSpace(natsURL))
+		if err != nil || u.Host == "" {
+			return false
+		}
+		d, err := net.DialTimeout("tcp", u.Host, 2*time.Second)
+		if err != nil {
+			return false
+		}
+		_ = d.Close()
+		return true
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if !ready() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("nats_unreachable\n"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	srv := &http.Server{Addr: addr, Handler: mux}
+	go func() {
+		log.Printf("worker status http listen=%s", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("worker status http: %v", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shctx)
+	}()
+}
+
 func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *handoffremote.Store, publisher runtime.StatusPublisher, slackClients map[string]*slack.Client) error {
 	log.Printf("agent-factory serve mode employee=%s nats=%s stream=%s",
 		cfg.EmployeeID,
@@ -212,6 +263,8 @@ func runServe(cfg runtime.AppConfig, engine *runtime.Engine, handoffStore *hando
 	)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	startWorkerStatusHTTPServer(ctx, cfg.NatsURL)
 
 	startJoanneInteractionSocket(ctx, cfg.EmployeeID)
 
