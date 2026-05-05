@@ -96,7 +96,9 @@ func runConsumerSession(ctx context.Context, cfg ConsumerConfig, handle Orchestr
 	subject := fmt.Sprintf("slack.work.%s.events", employeeID)
 	durable := strings.TrimSpace(cfg.NatsDurableName)
 	if durable == "" {
-		durable = "agent-factory-" + employeeID
+		// Backward-compatible default: keep the same durable name used by employee-factory so
+		// agent-factory continues from the existing cursor instead of replaying historical backlog.
+		durable = "employee-factory-" + employeeID
 	}
 
 	sub, err := js.PullSubscribe(subject, durable, nats.BindStream(stream), nats.ManualAck())

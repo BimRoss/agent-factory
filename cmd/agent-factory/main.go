@@ -303,6 +303,17 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		log.Printf("orchestrator payload parse failed: %v", err)
 		return nil
 	}
+	if stale, age, cutoff := shouldDropStaleOrchestratorEvent(event); stale {
+		log.Printf(
+			"orchestrator payload drop stale target=%s channel=%s message_ts=%s age=%s cutoff=%s",
+			normalizeID(event.TargetEmployee),
+			strings.TrimSpace(event.Message.ChannelID),
+			strings.TrimSpace(firstNonEmpty(event.Message.MessageTS, event.Message.ThreadTS)),
+			age,
+			cutoff,
+		)
+		return nil
+	}
 	orchestratorevent.EnsureRunAndTraceIDs(&event)
 	if skip, _ := runtime.ShouldSkipDuplicateOrchestratorPayload(ctx, event); skip {
 		return nil
@@ -845,6 +856,40 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func shouldDropStaleOrchestratorEvent(event orchestratorevent.EventV1) (bool, time.Duration, time.Duration) {
+	cutoff := orchestratorMaxEventAge()
+	if cutoff <= 0 {
+		return false, 0, cutoff
+	}
+	tsRaw := strings.TrimSpace(firstNonEmpty(event.Message.MessageTS, event.Message.ThreadTS))
+	if tsRaw == "" {
+		return false, 0, cutoff
+	}
+	sec, err := strconv.ParseFloat(tsRaw, 64)
+	if err != nil || sec <= 0 {
+		return false, 0, cutoff
+	}
+	evtAt := time.Unix(int64(sec), int64((sec-float64(int64(sec)))*float64(time.Second)))
+	age := time.Since(evtAt)
+	if age < 0 {
+		return false, age, cutoff
+	}
+	return age > cutoff, age, cutoff
+}
+
+func orchestratorMaxEventAge() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("ORCHESTRATOR_MAX_EVENT_AGE_SEC"))
+	if raw == "" {
+		// Defensive default: chat ingress should be near-real-time; older events are likely replay.
+		return 6 * time.Hour
+	}
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec < 0 {
+		return 6 * time.Hour
+	}
+	return time.Duration(sec) * time.Second
 }
 
 func effectiveThreadTS(msg orchestratorevent.MessageV1) string {

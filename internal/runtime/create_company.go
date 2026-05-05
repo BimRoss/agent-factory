@@ -31,6 +31,7 @@ const (
 	companyOnboardingSourceAgentFactory  = "agent-factory-create-company"
 	companyOnboardingSourceInviteHook    = "agent-factory-joanne-invited"
 	companyOnboardingSourceAfterTerms    = "agent-factory-after-terms-accept"
+	defaultInviteFreshWindow             = 2 * time.Hour
 )
 
 var (
@@ -629,11 +630,44 @@ func HandleJoanneInvitedCompanyChannel(ctx context.Context, api *slack.Client, c
 	if err := persistNewCompanyChannel(ctx, ch, chName, owners); err != nil {
 		return fmt.Errorf("joanne invite onboarding: persist: %w", err)
 	}
+	// Safety: when Redis is fresh, member_joined_channel can replay Joanne's existing private-channel memberships.
+	// Treat older channels as import/backfill only; do not post onboarding copy into already-active rooms.
+	if !inviteTriggeredOnboardingEligible(chInfo) {
+		log.Printf("joanne invite onboarding: import_only channel=%s source=%s created=%d", ch, companyOnboardingSourceInviteHook, chInfo.Created)
+		return nil
+	}
 	enqueueCompanyChannelOnboardingWithSource(ctx, ch, owners, companyOnboardingSourceInviteHook)
 	if err := postCompanyOnboardingKickoff(ctx, api, ch, chName, owners); err != nil {
 		log.Printf("joanne invite onboarding: post kickoff channel_id=%s err=%v", ch, err)
 	}
 	return nil
+}
+
+func inviteTriggeredOnboardingEligible(chInfo *slack.Channel) bool {
+	if chInfo == nil {
+		return false
+	}
+	createdUnix := int64(chInfo.Created)
+	if createdUnix <= 0 {
+		return false
+	}
+	age := time.Since(time.Unix(createdUnix, 0))
+	if age < 0 {
+		age = 0
+	}
+	return age <= inviteTriggeredFreshWindow()
+}
+
+func inviteTriggeredFreshWindow() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("COMPANY_ONBOARDING_INVITE_FRESH_WINDOW_SEC"))
+	if raw == "" {
+		return defaultInviteFreshWindow
+	}
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec < 0 {
+		return defaultInviteFreshWindow
+	}
+	return time.Duration(sec) * time.Second
 }
 
 func ownerCandidatesFromInvite(ids ...string) []string {
