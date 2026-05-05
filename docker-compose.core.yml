@@ -1,3 +1,8 @@
+# Local "core" stack: Slack → NATS → agent bots + makeacompany admin UI. It does **not** run Kubernetes-style
+# CronJobs. Channel knowledge markdown in Redis (`agent-factory:channel_knowledge:*:markdown`) is produced by a
+# separate **channel-knowledge-refresh** batch binary (historically the `channel-scraper` CronJob on the
+# employee-factory image in GitOps). Until that job runs against this Redis (or refresh is ported into
+# agent-factory), `/admin/...` digest panels stay empty even when the rest of the stack is healthy.
 services:
   nats:
     profiles: ["local"]
