@@ -74,6 +74,8 @@ services:
         source: ../skill-factory
         target: /workspace/skill-factory
 
+  # makeacompany-backend: compose defaults use `redis` + `agent-factory:*` channel keys. Prod GitOps uses
+  # employee-factory-redis and `employee-factory:*` keys — see ../makeacompany-ai/docs/redis-wiring-reconciliation.md.
   makeacompany-backend:
     profiles: ["local"]
     build:
