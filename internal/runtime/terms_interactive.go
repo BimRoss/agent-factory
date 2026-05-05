@@ -82,7 +82,7 @@ func HandleTermsInteraction(ctx context.Context, api *slack.Client, cb slack.Int
 
 	switch action.Decision {
 	case skillConfirmationDecisionConfirm:
-		if err := recordHumansTermsAcceptedWithRetry(ctx, action.RequestUserID, messageTS); err != nil {
+		if err := recordHumansTermsAcceptedWithRetry(ctx, api, action.RequestUserID, messageTS); err != nil {
 			log.Printf("terms_interactive: record accept slack_user=%s err=%v", action.RequestUserID, err)
 			postTermsThreadMessage(ctx, api, ch, threadTS,
 				"I could not record your agreement yet because your workspace profile index is still syncing. Please tap *I Agree* again in a few seconds, or reply with *I Agree* here.")

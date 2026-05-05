@@ -62,6 +62,10 @@ func PostHumansChannelWelcome(ctx context.Context, api *slack.Client, slackUserI
 		return fmt.Errorf("slack user is not eligible")
 	}
 
+	if err := upsertMakeacompanySlackUserIndex(ctx, rdb, slackUserID, u.Profile.Email); err != nil {
+		log.Printf("humans welcome: slack→email index upsert user=%s err=%v", slackUserID, err)
+	}
+
 	rootText := fmt.Sprintf("Hey, welcome to the company <@%s>! We need you to accept our *terms of use* before you begin working with us. Open the thread on this message to read them.", slackUserID)
 	rootCtx, rootCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer rootCancel()

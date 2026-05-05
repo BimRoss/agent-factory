@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/slack-go/slack"
 )
 
 const (
@@ -120,7 +121,11 @@ func (e *Engine) runUpdateTerms(ctx context.Context, task Task) (RenderPayload, 
 		if msgTS == "" {
 			msgTS = time.Now().UTC().Format(time.RFC3339Nano)
 		}
-		if err := recordHumansTermsAcceptedWithRetry(ctx, task.HumanUserID, msgTS); err != nil {
+		var slackAPI *slack.Client
+		if e.slackForEmployee != nil {
+			slackAPI = e.slackForEmployee(task.OwnerEmployeeID)
+		}
+		if err := recordHumansTermsAcceptedWithRetry(ctx, slackAPI, task.HumanUserID, msgTS); err != nil {
 			return RenderPayload{}, fmt.Errorf("record terms acceptance: %w", err)
 		}
 		epilogue := ""
@@ -217,7 +222,7 @@ func humansTermsRejectedText(joanneMention string) string {
 	)
 }
 
-func recordHumansTermsAcceptedWithRetry(ctx context.Context, slackUserID, messageTS string) error {
+func recordHumansTermsAcceptedWithRetry(ctx context.Context, api *slack.Client, slackUserID, messageTS string) error {
 	redisURL := strings.TrimSpace(os.Getenv("REDIS_URL"))
 	if redisURL == "" {
 		return fmt.Errorf("REDIS_URL is not configured")
@@ -233,6 +238,14 @@ func recordHumansTermsAcceptedWithRetry(ctx context.Context, slackUserID, messag
 	}
 	if err := RecordHumansTermsAccepted(ctx, client, "", "", slackUserID, messageTS); err == nil {
 		return nil
+	}
+
+	// Single-user path: users.info often exposes email before the workspace snapshot catches up.
+	if api != nil {
+		_ = tryUpsertMakeacompanySlackIndexFromBotUserInfo(ctx, api, client, slackUserID)
+		if err := RecordHumansTermsAccepted(ctx, client, "", "", slackUserID, messageTS); err == nil {
+			return nil
+		}
 	}
 
 	refreshURL := strings.TrimSpace(os.Getenv("SLACK_USERS_SNAPSHOT_REFRESH_URL"))

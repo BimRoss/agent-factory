@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/slack-go/slack"
 )
 
 // Keep Redis key layout aligned with makeacompany-ai / employee-factory userprofile package.
@@ -33,6 +34,53 @@ func makeacompanyBySlackKey(bySlackPrefix, slackUserID string) string {
 		bp = defaultMakeACBySlackPrefix
 	}
 	return strings.TrimSuffix(bp, ":") + ":" + strings.TrimSpace(slackUserID)
+}
+
+// upsertMakeacompanySlackUserIndex writes makeacompany:user_by_slack:<id> and slack fields on
+// makeacompany:user_profile:<email>, matching makeacompany-ai Store.UpsertUserProfileSlackID.
+func upsertMakeacompanySlackUserIndex(ctx context.Context, rdb *redis.Client, slackUserID, rawEmail string) error {
+	if rdb == nil {
+		return fmt.Errorf("nil redis client")
+	}
+	slackUserID = strings.TrimSpace(slackUserID)
+	email := normalizeTermsEmail(strings.TrimSpace(rawEmail))
+	if slackUserID == "" || email == "" || !strings.Contains(email, "@") {
+		return fmt.Errorf("missing slack user id or invalid email")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	pk := makeacompanyProfileKey("", email)
+	pipe := rdb.TxPipeline()
+	pipe.HSet(ctx, pk, map[string]any{
+		"email":                    email,
+		"slack_user_id":            slackUserID,
+		"slack_profile_updated_at": now,
+		"profile_updated_at":       now,
+	})
+	pipe.Set(ctx, makeacompanyBySlackKey("", slackUserID), email, 0)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// tryUpsertMakeacompanySlackIndexFromBotUserInfo calls users.info with the bot token and indexes
+// the member when profile.email is visible (same visibility rules as the welcome eligibility check).
+func tryUpsertMakeacompanySlackIndexFromBotUserInfo(ctx context.Context, api *slack.Client, rdb *redis.Client, slackUserID string) error {
+	if api == nil || rdb == nil {
+		return fmt.Errorf("nil slack client or redis")
+	}
+	slackUserID = strings.TrimSpace(slackUserID)
+	if slackUserID == "" {
+		return fmt.Errorf("missing slack user id")
+	}
+	infoCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	u, err := api.GetUserInfoContext(infoCtx, slackUserID)
+	if err != nil {
+		return fmt.Errorf("slack users.info: %w", err)
+	}
+	if u == nil || u.Deleted || u.IsBot {
+		return fmt.Errorf("ineligible slack user")
+	}
+	return upsertMakeacompanySlackUserIndex(ctx, rdb, slackUserID, u.Profile.Email)
 }
 
 // WaitForMakeacompanyBySlackIndex polls until makeacompany:user_by_slack:<U…> exists or ctx ends.
