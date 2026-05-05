@@ -68,7 +68,7 @@ Both include:
 - local `nats` + `redis`
 - **Cold-start mirrors of prod CronJobs (profile `local` only):**
   - `makeacompany-slack-snapshots` — loops `POST /v1/internal/refresh-slack-users-snapshot` and `…/refresh-slack-member-channels-snapshot` against the compose backend (same bearer as `BACKEND_INTERNAL_SERVICE_TOKEN`).
-  - `channel-knowledge-refresh` — runs `/app/channel-knowledge-refresh` from the **`geeemoney/employee-factory`** image on an interval, using **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` so history scrape matches prod (orchestrator must be **in** every company channel you expect digests for). Override image with **`CHANNEL_KNOWLEDGE_REFRESH_IMAGE`** if your tag must match a build that writes **`agent-factory:*`** digest keys.
+  - `channel-knowledge-refresh` — runs `/app/channel-knowledge-refresh` from the **`geeemoney/employee-factory`** image on an interval, using **`ORCHESTRATOR_SLACK_BOT_TOKEN`** as `SLACK_BOT_TOKEN` so history scrape matches prod (orchestrator must be **in** every company channel you expect digests for). The service is pinned to **`platform: linux/amd64`** because shipped tags are amd64-only (Apple Silicon otherwise errors with *no matching manifest for linux/arm64*). Override image with **`CHANNEL_KNOWLEDGE_REFRESH_IMAGE`** if your tag must match a build that writes **`agent-factory:*`** digest keys.
 
 Run:
 

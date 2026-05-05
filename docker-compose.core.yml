@@ -529,6 +529,8 @@ services:
   # Mirrors employee-factory `channel-scraper` CronJob (prod image often suspended in GitOps; here it runs on a loop).
   channel-knowledge-refresh:
     profiles: ["local"]
+    # CI pushes linux/amd64 only; Apple Silicon needs explicit platform to pull/run.
+    platform: linux/amd64
     image: ${CHANNEL_KNOWLEDGE_REFRESH_IMAGE:-geeemoney/employee-factory:0.15.23}
     restart: unless-stopped
     depends_on:
