@@ -5,7 +5,7 @@ import "fmt"
 type createDocAdapter struct{}
 
 func (createDocAdapter) CapabilityID() string {
-	return "create-doc"
+	return "create-google-doc"
 }
 
 func (createDocAdapter) BuildPlan(task Task) CapabilityExecutionResult {
@@ -15,9 +15,9 @@ func (createDocAdapter) BuildPlan(task Task) CapabilityExecutionResult {
 			"Creating Google Doc and applying sharing...",
 		},
 		FinalPayload: RenderPayload{
-			OutputID:     fmt.Sprintf("%s-create-doc", task.ID),
+			OutputID:     fmt.Sprintf("%s-create-google-doc", task.ID),
 			FallbackText: "",
-			FinalSummary: "create-doc",
+			FinalSummary: "create-google-doc",
 			Transport:    "slack",
 		},
 	}

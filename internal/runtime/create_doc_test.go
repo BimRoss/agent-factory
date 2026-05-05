@@ -53,3 +53,25 @@ func TestDefaultCreateDocTitle(t *testing.T) {
 		t.Fatal("expected non-empty title")
 	}
 }
+
+func TestSanitizeGeneratedCreateDocTitle(t *testing.T) {
+	raw := "  \"Debate Lessons Learned: Strait Blockade\".\n"
+	got := sanitizeGeneratedCreateDocTitle(raw)
+	want := "Debate Lessons Learned: Strait Blockade"
+	if got != want {
+		t.Fatalf("title=%q want=%q", got, want)
+	}
+}
+
+func TestInferCreateDocTitleFromBody_FirstUsefulLine(t *testing.T) {
+	body := `
+# Regional Energy Crisis Lessons
+
+This document summarizes the strategic tradeoffs discussed in thread.
+`
+	got := inferCreateDocTitleFromBody(body)
+	want := "Regional Energy Crisis Lessons"
+	if got != want {
+		t.Fatalf("title=%q want=%q", got, want)
+	}
+}

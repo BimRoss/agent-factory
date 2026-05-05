@@ -287,8 +287,8 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			return task, err
 		}
 		plan.FinalPayload = p
-	} else if capabilityID == "create-doc" {
-		if err := e.publisher.PublishUpdate(task, "Preparing create-doc request..."); err != nil {
+	} else if capabilityID == "create-google-doc" {
+		if err := e.publisher.PublishUpdate(task, "Preparing create-google-doc request..."); err != nil {
 			_ = e.publisher.ClearInboundReaction(task)
 			return task, err
 		}

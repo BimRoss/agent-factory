@@ -36,7 +36,7 @@ func DefaultRegistry() Registry {
 			ID: "joanne",
 			PackagedSkill: setFromSlice([]string{
 				"create-email",
-				"create-doc",
+				"create-google-doc",
 				"create-company",
 				"delete-company",
 				"read-user",
@@ -53,7 +53,7 @@ func DefaultRegistry() Registry {
 
 	catalog := setFromSlice([]string{
 		"create-email",
-		"create-doc",
+		"create-google-doc",
 		"create-company",
 		"delete-company",
 		"read-company",

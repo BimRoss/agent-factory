@@ -20,13 +20,13 @@ func (c GoogleDocsEnvConfig) Validate(employeeID string) error {
 		emp = "EMPLOYEE"
 	}
 	if strings.TrimSpace(c.ClientID) == "" {
-		return fmt.Errorf("create-doc: missing Google OAuth client id (set %s_GOOGLE_CLIENT_ID or GOOGLE_CLIENT_ID)", emp)
+		return fmt.Errorf("create-google-doc: missing Google OAuth client id (set %s_GOOGLE_CLIENT_ID or GOOGLE_CLIENT_ID)", emp)
 	}
 	if strings.TrimSpace(c.ClientSecret) == "" {
-		return fmt.Errorf("create-doc: missing Google OAuth client secret (set %s_GOOGLE_CLIENT_SECRET or GOOGLE_CLIENT_SECRET)", emp)
+		return fmt.Errorf("create-google-doc: missing Google OAuth client secret (set %s_GOOGLE_CLIENT_SECRET or GOOGLE_CLIENT_SECRET)", emp)
 	}
 	if strings.TrimSpace(c.RefreshToken) == "" {
-		return fmt.Errorf("create-doc: missing Google OAuth refresh token (set %s_GOOGLE_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN)", emp)
+		return fmt.Errorf("create-google-doc: missing Google OAuth refresh token (set %s_GOOGLE_REFRESH_TOKEN or GOOGLE_REFRESH_TOKEN)", emp)
 	}
 	return nil
 }

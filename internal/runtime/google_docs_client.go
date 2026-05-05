@@ -63,7 +63,7 @@ func (c *GoogleDocsClient) Create(ctx context.Context, in GoogleDocsCreateInput)
 	}
 	body := strings.TrimSpace(in.Body)
 	if body == "" {
-		return GoogleDocsCreateResult{}, fmt.Errorf("create-doc: missing document body")
+		return GoogleDocsCreateResult{}, fmt.Errorf("create-google-doc: missing document body")
 	}
 
 	documentID, createdTitle, err := c.createDocument(ctx, title)
@@ -110,7 +110,7 @@ func (c *GoogleDocsClient) createDocument(ctx context.Context, title string) (st
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return "", "", fmt.Errorf("create-doc: docs create failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		return "", "", fmt.Errorf("create-google-doc: docs create failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
 	var out struct {
 		DocumentID string `json:"documentId"`
@@ -122,7 +122,7 @@ func (c *GoogleDocsClient) createDocument(ctx context.Context, title string) (st
 	out.DocumentID = strings.TrimSpace(out.DocumentID)
 	out.Title = strings.TrimSpace(out.Title)
 	if out.DocumentID == "" {
-		return "", "", fmt.Errorf("create-doc: docs create returned empty documentId")
+		return "", "", fmt.Errorf("create-google-doc: docs create returned empty documentId")
 	}
 	if out.Title == "" {
 		out.Title = title
@@ -160,7 +160,7 @@ func (c *GoogleDocsClient) insertDocumentBody(ctx context.Context, documentID, b
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return fmt.Errorf("create-doc: docs batchUpdate failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		return fmt.Errorf("create-google-doc: docs batchUpdate failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
 	return nil
 }
@@ -171,7 +171,7 @@ func (c *GoogleDocsClient) grantPermission(ctx context.Context, documentID, emai
 	}
 	documentID = strings.TrimSpace(documentID)
 	if documentID == "" {
-		return fmt.Errorf("create-doc: missing document id")
+		return fmt.Errorf("create-google-doc: missing document id")
 	}
 	emailAddress, err := normalizeEmail(email)
 	if err != nil {
@@ -202,7 +202,7 @@ func (c *GoogleDocsClient) grantPermission(ctx context.Context, documentID, emai
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		rb, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		return fmt.Errorf("create-doc: drive permissions.create failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		return fmt.Errorf("create-google-doc: drive permissions.create failed status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(rb)))
 	}
 	return nil
 }
@@ -210,15 +210,15 @@ func (c *GoogleDocsClient) grantPermission(ctx context.Context, documentID, emai
 func normalizeEmail(raw string) (string, error) {
 	addr := strings.TrimSpace(raw)
 	if addr == "" {
-		return "", fmt.Errorf("create-doc: missing email")
+		return "", fmt.Errorf("create-google-doc: missing email")
 	}
 	parsed, err := mail.ParseAddress(addr)
 	if err != nil || parsed == nil {
-		return "", fmt.Errorf("create-doc: invalid email %q", addr)
+		return "", fmt.Errorf("create-google-doc: invalid email %q", addr)
 	}
 	email := strings.TrimSpace(parsed.Address)
 	if email == "" {
-		return "", fmt.Errorf("create-doc: invalid email %q", addr)
+		return "", fmt.Errorf("create-google-doc: invalid email %q", addr)
 	}
 	return email, nil
 }

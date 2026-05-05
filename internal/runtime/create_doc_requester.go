@@ -19,7 +19,7 @@ type createDocRequesterEmailResolver func(ctx context.Context, task Task) (email
 
 func injectCreateDocRequesterEditor(ctx context.Context, req *createDocRequest, task Task, resolver createDocRequesterEmailResolver) (email, source string, err error) {
 	if req == nil {
-		return "", "", fmt.Errorf("create-doc: request is nil")
+		return "", "", fmt.Errorf("create-google-doc: request is nil")
 	}
 	if resolver == nil {
 		resolver = resolveCreateDocRequesterEmail
@@ -35,7 +35,7 @@ func injectCreateDocRequesterEditor(ctx context.Context, req *createDocRequest, 
 func resolveCreateDocRequesterEmail(ctx context.Context, task Task) (email, source string, err error) {
 	userID := strings.TrimSpace(task.HumanUserID)
 	if userID == "" {
-		return "", "", fmt.Errorf("create-doc: missing requesting slack user id")
+		return "", "", fmt.Errorf("create-google-doc: missing requesting slack user id")
 	}
 
 	redisEmail, redisErr := lookupRequesterEmailFromRedis(ctx, userID)
@@ -48,7 +48,7 @@ func resolveCreateDocRequesterEmail(ctx context.Context, task Task) (email, sour
 		return slackEmail, "inferred_from_slack_user", nil
 	}
 
-	return "", "", fmt.Errorf("create-doc: requester email lookup failed (redis=%v, slack=%v)", redisErr, slackErr)
+	return "", "", fmt.Errorf("create-google-doc: requester email lookup failed (redis=%v, slack=%v)", redisErr, slackErr)
 }
 
 func lookupRequesterEmailFromRedis(ctx context.Context, userID string) (string, error) {

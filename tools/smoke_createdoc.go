@@ -1,7 +1,7 @@
 //go:build ignore
 
 // Local smoke: loads the same registry/tool specs as cmd/agent-factory and runs
-// create-doc once with an explicit body (no Gemini draft). Usage from repo root:
+// create-google-doc once with an explicit body (no Gemini draft). Usage from repo root:
 //
 //	set -a && source .env.dev && set +a
 //	export SHARED_CONTRACTS_DIR=/path/to/shared-contracts SKILL_FACTORY_DIR=/path/to/skill-factory
@@ -61,7 +61,7 @@ func main() {
 	)
 
 	task := runtime.Task{
-		ID:           "smoke-create-doc",
+		ID:           "smoke-create-google-doc",
 		ThreadAnchor: "Csmoke:1234567890.000001",
 		TraceID:      "trace-smoke-createdoc",
 		RequestText:  "title: Agent factory smoke; body: Smoke test body — Google Docs API path only (no Gemini draft).",
@@ -71,9 +71,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("start task: %v", err)
 	}
-	owned, err = engine.ExecuteCapability(context.Background(), owned, "create-doc", nil)
+	owned, err = engine.ExecuteCapability(context.Background(), owned, "create-google-doc", nil)
 	if err != nil {
-		log.Fatalf("execute create-doc: %v", err)
+		log.Fatalf("execute create-google-doc: %v", err)
 	}
 	fmt.Printf("ok task state=%s owner=%s\n", owned.LastState, owned.OwnerEmployeeID)
 }

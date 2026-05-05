@@ -42,10 +42,10 @@ func (e *Engine) runCreateDoc(ctx context.Context, task Task) (RenderPayload, er
 	req := parseCreateDocRequest(task.RequestText)
 	if email, source, err := injectCreateDocRequesterEditor(ctx, &req, task, resolveCreateDocRequesterEmail); err != nil {
 		if strings.TrimSpace(task.HumanUserID) != "" {
-			log.Printf("create-doc: requester editor lookup skipped user=%s err=%v", strings.TrimSpace(task.HumanUserID), err)
+			log.Printf("create-google-doc: requester editor lookup skipped user=%s err=%v", strings.TrimSpace(task.HumanUserID), err)
 		}
 	} else {
-		log.Printf("create-doc: requester editor added user=%s email=%s source=%s", strings.TrimSpace(task.HumanUserID), strings.TrimSpace(email), strings.TrimSpace(source))
+		log.Printf("create-google-doc: requester editor added user=%s email=%s source=%s", strings.TrimSpace(task.HumanUserID), strings.TrimSpace(email), strings.TrimSpace(source))
 	}
 	threadCtx := ""
 	if e.threadContext != nil {
@@ -57,6 +57,18 @@ func (e *Engine) runCreateDoc(ctx context.Context, task Task) (RenderPayload, er
 			return RenderPayload{}, err
 		}
 		req.Body = body
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		if inferred, err := generateCreateDocTitle(ctx, e.provider, req, task, threadCtx); err != nil {
+			log.Printf("create-google-doc: title generation failed, using fallback title: %v", err)
+		} else {
+			req.Title = inferred
+		}
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		if fromBody := inferCreateDocTitleFromBody(req.Body); fromBody != "" {
+			req.Title = fromBody
+		}
 	}
 	if strings.TrimSpace(req.Title) == "" {
 		req.Title = defaultCreateDocTitle(task)
@@ -92,9 +104,9 @@ func (e *Engine) runCreateDoc(ctx context.Context, task Task) (RenderPayload, er
 	}
 
 	return RenderPayload{
-		OutputID:     fmt.Sprintf("%s-create-doc", task.ID),
+		OutputID:     fmt.Sprintf("%s-create-google-doc", task.ID),
 		FallbackText: fmt.Sprintf("Created Google Doc: %s", strings.TrimSpace(createRes.URL)),
-		FinalSummary: "create-doc completed",
+		FinalSummary: "create-google-doc completed",
 		Transport:    "slack",
 	}, nil
 }
@@ -165,13 +177,56 @@ Use headings and clear sections where useful.
 	}
 	body, _, err := runGeminiGenerate(ctx, provider, requestBody)
 	if err != nil {
-		return "", fmt.Errorf("create-doc: draft generation failed: %w", err)
+		return "", fmt.Errorf("create-google-doc: draft generation failed: %w", err)
 	}
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return "", fmt.Errorf("create-doc: draft generation returned empty body")
+		return "", fmt.Errorf("create-google-doc: draft generation returned empty body")
 	}
 	return body, nil
+}
+
+func generateCreateDocTitle(ctx context.Context, provider ProviderConfig, req createDocRequest, task Task, threadContext string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	instruction := strings.TrimSpace(req.Instruction)
+	if instruction == "" {
+		instruction = "Create a useful summary document from the thread context."
+	}
+	system := strings.TrimSpace(`
+You create concise, descriptive Google Doc titles for Joanne.
+Return plain text only: title text with no quotes, no markdown, and no trailing period.
+Keep it under 10 words.
+`)
+	user := fmt.Sprintf(
+		"Employee: %s\nSlack request:\n%s\n\nThread context (may be empty):\n%s\n\nDraft body preview:\n%s\n\nProduce one concise, specific title.",
+		strings.TrimSpace(task.OwnerEmployeeID),
+		instruction,
+		truncateRunes(strings.TrimSpace(threadContext), 6000),
+		truncateRunes(strings.TrimSpace(req.Body), 1800),
+	)
+	requestBody := map[string]any{
+		"systemInstruction": map[string]any{
+			"parts": []any{map[string]any{"text": system}},
+		},
+		"contents": []any{
+			map[string]any{
+				"parts": []any{map[string]any{"text": user}},
+			},
+		},
+		"generationConfig": map[string]any{
+			"temperature":      0.2,
+			"maxOutputTokens":  80,
+			"topP":             0.9,
+			"responseMimeType": "text/plain",
+		},
+	}
+	raw, _, err := runGeminiGenerate(ctx, provider, requestBody)
+	if err != nil {
+		return "", fmt.Errorf("create-google-doc: title generation failed: %w", err)
+	}
+	return sanitizeGeneratedCreateDocTitle(raw), nil
 }
 
 func defaultCreateDocTitle(task Task) string {
@@ -258,6 +313,42 @@ func sanitizeInferredTitle(raw string) string {
 		title = strings.TrimSpace(title[:120])
 	}
 	return title
+}
+
+func sanitizeGeneratedCreateDocTitle(raw string) string {
+	title := strings.TrimSpace(raw)
+	if title == "" {
+		return ""
+	}
+	title = strings.ReplaceAll(title, "\n", " ")
+	title = strings.ReplaceAll(title, "\r", " ")
+	title = strings.TrimSuffix(title, ".")
+	title = strings.TrimSpace(strings.Trim(title, `"'`))
+	title = strings.Join(strings.Fields(title), " ")
+	if len(title) > 120 {
+		title = strings.TrimSpace(title[:120])
+	}
+	return title
+}
+
+func inferCreateDocTitleFromBody(body string) string {
+	lines := strings.Split(body, "\n")
+	for _, line := range lines {
+		candidate := strings.TrimSpace(line)
+		candidate = strings.TrimLeft(candidate, "#*- ")
+		candidate = sanitizeGeneratedCreateDocTitle(candidate)
+		if candidate == "" {
+			continue
+		}
+		if len(candidate) < 4 {
+			continue
+		}
+		if strings.Contains(strings.ToLower(candidate), "google doc") {
+			continue
+		}
+		return candidate
+	}
+	return ""
 }
 
 func inferEmailsByCue(raw string, primary *regexp.Regexp, secondary ...*regexp.Regexp) []string {
