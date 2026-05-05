@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,11 +25,18 @@ import (
 	"github.com/slack-go/slack"
 )
 
+var (
+	reGitHubConversationCue = regexp.MustCompile(`(?i)\b(github|repo|repository|repositories|commit|commits|pull request|pull requests|prs|branches|branch|org:|user:|owner/repo)\b`)
+	reGitHubRepoSlugCue     = regexp.MustCompile(`\b[A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+\b`)
+	githubThreadHints       = newThreadCapabilityHints(defaultGitHubFollowupStickyTTL())
+)
+
 func main() {
 	appConfig, err := runtime.LoadAppConfigFromEnv()
 	if err != nil {
 		log.Fatalf("load app config: %v", err)
 	}
+	logGitHubStartupProbe(appConfig.EmployeeID)
 	sharedContractsDir := firstNonEmpty(os.Getenv("SHARED_CONTRACTS_DIR"), "../shared-contracts")
 	employeeInstancesPath := firstNonEmpty(
 		os.Getenv("EMPLOYEE_INSTANCES_FILE"),
@@ -91,6 +99,35 @@ func main() {
 	default:
 		log.Fatalf("unknown AGENT_FACTORY_MODE=%q (supported: serve, demo)", appConfig.Mode)
 	}
+}
+
+func logGitHubStartupProbe(employeeID string) {
+	probe := runtime.ProbeGitHubAccess(context.Background(), employeeID)
+	if !probe.TokenConfigured {
+		log.Printf("github probe employee=%s token=missing", firstNonEmpty(probe.EmployeeID, normalizeID(employeeID)))
+		return
+	}
+	if probe.ListScopeOK {
+		log.Printf(
+			"github probe employee=%s owner=%s scope=%s list_scope=ok token_type=%s oauth_scopes=%q",
+			firstNonEmpty(probe.EmployeeID, normalizeID(employeeID)),
+			probe.Owner,
+			probe.Scope,
+			strings.TrimSpace(probe.TokenTypeHint),
+			strings.TrimSpace(probe.TokenScopes),
+		)
+		return
+	}
+	log.Printf(
+		"github probe employee=%s owner=%s scope=%s list_scope=failed token_type=%s oauth_scopes=%q warning=%s err=%s",
+		firstNonEmpty(probe.EmployeeID, normalizeID(employeeID)),
+		probe.Owner,
+		probe.Scope,
+		strings.TrimSpace(probe.TokenTypeHint),
+		strings.TrimSpace(probe.TokenScopes),
+		probe.Warning,
+		probe.Error,
+	)
 }
 
 func runDemo(engine *runtime.Engine, store *runtime.MemoryStore) {
@@ -221,6 +258,21 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		HumanUserID:  strings.TrimSpace(event.Message.UserID),
 		Mode:         firstNonEmpty(modeFromDecision(event), "conversation"),
 	}
+	if capabilityID == "" {
+		stickyCapability, stickyOK := githubThreadHints.recall(task.OwnerEmployeeID, task.ThreadAnchor, time.Now().UTC())
+		if stickyOK && stickyCapability != "" && isGitHubLikelyFollowUp(task.RequestText) {
+			capabilityID = stickyCapability
+			log.Printf(
+				"github routing sticky-hit employee=%s task=%s trace=%s capability=%s",
+				employeeID,
+				taskID,
+				traceID,
+				capabilityID,
+			)
+		} else if isGitHubLikelyFollowUp(task.RequestText) {
+			task.RequestText = appendGitHubNoToolContext(task.RequestText, cfg.EmployeeID)
+		}
+	}
 	ownedTask, err := engine.StartTask(task, employeeID)
 	if err != nil {
 		return fmt.Errorf("start task %s: %w", taskID, err)
@@ -235,6 +287,9 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 			return fmt.Errorf("execute capability %s for task %s: %w", capabilityID, taskID, err)
 		}
 		maybePublishPipelineContinuation(cfg, event, executedTask)
+		if isReadGitHubCapabilityID(capabilityID) {
+			githubThreadHints.remember(task.OwnerEmployeeID, task.ThreadAnchor, capabilityID, time.Now().UTC())
+		}
 		log.Printf("processed orchestrator event employee=%s task=%s tool=%s trace=%s kind=%s",
 			employeeID,
 			taskID,
@@ -253,6 +308,130 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		employeeID, taskID, traceID, kind)
 	_ = ctx
 	return nil
+}
+
+func appendGitHubNoToolContext(raw, employeeID string) string {
+	trimmed := strings.TrimSpace(raw)
+	probe := runtime.ProbeGitHubAccess(context.Background(), employeeID)
+	accessSummary := "GitHub access check: token missing."
+	if probe.TokenConfigured {
+		accessSummary = fmt.Sprintf(
+			"GitHub access check: token configured (owner=%s, scope=%s, list_scope_ok=%t).",
+			firstNonEmpty(strings.TrimSpace(probe.Owner), "(unresolved)"),
+			firstNonEmpty(strings.TrimSpace(probe.Scope), "(unresolved)"),
+			probe.ListScopeOK,
+		)
+	}
+	note := fmt.Sprintf(
+		"System note: this message looks GitHub-related, but no GitHub tool intent was routed for this turn. %s Reply in plain text, state that this answer is not a live GitHub API read, and ask the user to explicitly request `read-github` (or ask for repo/commits/PRs directly) for live/private GitHub data.",
+		accessSummary,
+	)
+	if trimmed == "" {
+		return note
+	}
+	return trimmed + "\n\n" + note
+}
+
+func isGitHubLikelyFollowUp(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if reGitHubConversationCue.MatchString(raw) {
+		return true
+	}
+	return reGitHubRepoSlugCue.MatchString(raw)
+}
+
+func isReadGitHubCapabilityID(capabilityID string) bool {
+	switch normalizeID(capabilityID) {
+	case "read-github", "read-github-repos", "read-github-repo-meta", "read-github-tree", "read-github-file", "read-github-code-search", "read-github-commits", "read-github-prs", "read-github-branches":
+		return true
+	default:
+		return false
+	}
+}
+
+type threadCapabilityHint struct {
+	capabilityID string
+	updatedAt    time.Time
+}
+
+type threadCapabilityHints struct {
+	mu   sync.RWMutex
+	ttl  time.Duration
+	byID map[string]threadCapabilityHint
+}
+
+func newThreadCapabilityHints(ttl time.Duration) *threadCapabilityHints {
+	if ttl <= 0 {
+		ttl = 8 * time.Minute
+	}
+	return &threadCapabilityHints{
+		ttl:  ttl,
+		byID: map[string]threadCapabilityHint{},
+	}
+}
+
+func (h *threadCapabilityHints) remember(employeeID, threadAnchor, capabilityID string, now time.Time) {
+	key := h.key(employeeID, threadAnchor)
+	capabilityID = normalizeID(capabilityID)
+	if key == "" || capabilityID == "" {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.byID[key] = threadCapabilityHint{
+		capabilityID: capabilityID,
+		updatedAt:    now,
+	}
+}
+
+func (h *threadCapabilityHints) recall(employeeID, threadAnchor string, now time.Time) (string, bool) {
+	key := h.key(employeeID, threadAnchor)
+	if key == "" {
+		return "", false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	h.mu.RLock()
+	hint, ok := h.byID[key]
+	h.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	if now.Sub(hint.updatedAt) > h.ttl {
+		h.mu.Lock()
+		delete(h.byID, key)
+		h.mu.Unlock()
+		return "", false
+	}
+	return hint.capabilityID, true
+}
+
+func (h *threadCapabilityHints) key(employeeID, threadAnchor string) string {
+	employeeID = normalizeID(employeeID)
+	threadAnchor = strings.TrimSpace(threadAnchor)
+	if employeeID == "" || threadAnchor == "" {
+		return ""
+	}
+	return employeeID + "|" + threadAnchor
+}
+
+func defaultGitHubFollowupStickyTTL() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("GITHUB_FOLLOWUP_STICKY_WINDOW_SEC"))
+	if raw == "" {
+		return 8 * time.Minute
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return 8 * time.Minute
+	}
+	return time.Duration(secs) * time.Second
 }
 
 func newRemoteHandoffMaybe(cfg runtime.AppConfig) (runtime.RemoteHandoffForwarder, *handoffremote.Store, func()) {

@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	reCreateIssuePhrase = regexp.MustCompile(`(?i)\b(create|open|file|write)\b(?:\s+(?:a|an))?\s+(?:github\s+)?issue\b`)
-	reSlackMentionToken = regexp.MustCompile(`(?i)<@[A-Z0-9]+>|@[a-z0-9._-]+`)
-	reWhitespace        = regexp.MustCompile(`\s+`)
+	reCreateIssuePhrase   = regexp.MustCompile(`(?i)\b(create|open|file|write)\b(?:\s+(?:a|an))?\s+(?:github\s+)?issue\b`)
+	reSlackMentionToken   = regexp.MustCompile(`(?i)<@[A-Z0-9]+>|@[a-z0-9._-]+`)
+	reWhitespace          = regexp.MustCompile(`\s+`)
+	reIssueOwnerRepoToken = regexp.MustCompile(`\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)\b`)
+	reIssueRepoSlugToken  = regexp.MustCompile(`\b([A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+)\b`)
 )
 
 type createIssueDraft struct {
@@ -43,8 +45,9 @@ func (e *Engine) runCreateIssue(task Task) (RenderPayload, error) {
 	ctx := context.Background()
 	cfg := LoadGitHubConfigForEmployee(task.OwnerEmployeeID)
 	if cfg.Token == "" {
-		return RenderPayload{}, fmt.Errorf("create-issue: set GITHUB_TOKEN or %s_GITHUB_TOKEN", strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)))
+		return RenderPayload{}, fmt.Errorf("create-issue: set %s_ORG_GH_TOKEN (preferred), %s_PERSONAL_GH_TOKEN, or %s_GITHUB_TOKEN / GITHUB_TOKEN", strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)))
 	}
+	cfg.Owner, cfg.OwnerScope = ResolveGitHubOwnerWithScope(ctx, cfg)
 
 	defaultRepo := cfg.FullRepo()
 	if r := extractNamedField(task.RequestText, "repo"); strings.TrimSpace(r) != "" {
@@ -57,8 +60,17 @@ func (e *Engine) runCreateIssue(task Task) (RenderPayload, error) {
 	}
 
 	raw := strings.TrimSpace(task.RequestText)
-	draft, explicitTitle, explicitBody := inferCreateIssueDraft(raw, task.HumanUserID, threadCtx, defaultRepo)
+	targetRepo := inferIssueTargetRepo(raw, threadCtx, defaultRepo, strings.TrimSpace(cfg.Owner))
+	draft, explicitTitle, explicitBody := inferCreateIssueDraft(raw, task.HumanUserID, threadCtx, targetRepo)
 	draft = synthesizeCreateIssueDraftGemini(ctx, e.provider, draft, raw, task.HumanUserID, threadCtx, explicitTitle, explicitBody)
+	if strings.TrimSpace(draft.Repo) == "" {
+		return RenderPayload{
+			OutputID:     fmt.Sprintf("%s-create-issue", task.ID),
+			FallbackText: "Which repo should I create this issue in? Send `repo: owner/repo` (or mention the repo name if your org owner is configured).",
+			FinalSummary: "create-issue awaiting repo",
+			Transport:    "slack",
+		}, nil
+	}
 
 	if needsCreateIssueFollowUp(draft, raw, threadCtx) {
 		q, err := geminiCreateIssueFollowUpQuestion(ctx, e.provider, raw, threadCtx, draft)
@@ -87,6 +99,9 @@ func (e *Engine) runCreateIssue(task Task) (RenderPayload, error) {
 }
 
 func needsCreateIssueFollowUp(d createIssueDraft, raw, threadCtx string) bool {
+	if strings.TrimSpace(d.Repo) == "" {
+		return true
+	}
 	plain := normalizeIssueComplaint(raw)
 	if plain == "" || plain == "Issue requested from Slack conversation." {
 		if strings.TrimSpace(threadCtx) == "" {
@@ -118,7 +133,7 @@ func inferCreateIssueDraft(rawText, requestUserID, threadContext, repo string) (
 		body = inferCreateIssueBody(cleanComplaint, requestUserID, threadContext)
 	}
 	if strings.TrimSpace(repo) == "" {
-		repo = "BimRoss/create-issue"
+		repo = ""
 	}
 
 	return createIssueDraft{
@@ -367,12 +382,67 @@ func normalizeOwnerRepoString(fromMsg, fallbackFull string) string {
 	if strings.Contains(fromMsg, "/") {
 		return fromMsg
 	}
-	// Allow shorthand "create-issue" with owner from fallback
+	// Allow shorthand "repo-slug" with owner from fallback/autodetect.
 	fOwner, _, ferr := splitOwnerRepo(fallbackFull)
 	if ferr != nil {
 		return fallbackFull
 	}
 	return fOwner + "/" + fromMsg
+}
+
+func inferIssueTargetRepo(raw, threadCtx, fallbackFull, defaultOwner string) string {
+	if owner, repo, ok := extractOwnerRepoToken(raw); ok {
+		return owner + "/" + repo
+	}
+	if owner, repo, ok := extractOwnerRepoToken(threadCtx); ok {
+		return owner + "/" + repo
+	}
+	if slug := extractIssueRepoSlug(raw); slug != "" {
+		if owner := strings.TrimSpace(defaultOwner); owner != "" {
+			return owner + "/" + slug
+		}
+		if o, _, err := splitOwnerRepo(strings.TrimSpace(fallbackFull)); err == nil {
+			return o + "/" + slug
+		}
+	}
+	if strings.TrimSpace(fallbackFull) != "" {
+		return strings.TrimSpace(fallbackFull)
+	}
+	return ""
+}
+
+func extractOwnerRepoToken(raw string) (owner, repo string, ok bool) {
+	for _, m := range reIssueOwnerRepoToken.FindAllStringSubmatch(raw, -1) {
+		if len(m) < 3 {
+			continue
+		}
+		owner = strings.TrimSpace(m[1])
+		repo = strings.TrimSpace(m[2])
+		if owner == "" || repo == "" {
+			continue
+		}
+		return owner, repo, true
+	}
+	return "", "", false
+}
+
+func extractIssueRepoSlug(raw string) string {
+	for _, m := range reIssueRepoSlugToken.FindAllStringSubmatch(raw, -1) {
+		if len(m) < 2 {
+			continue
+		}
+		candidate := strings.ToLower(strings.TrimSpace(m[1]))
+		if candidate == "" {
+			continue
+		}
+		switch candidate {
+		case "read-issue", "read-github", "read-github-repos", "read-github-repo-meta", "read-github-tree", "read-github-file", "read-github-code-search", "read-github-commits", "read-github-prs", "read-github-branches":
+			continue
+		default:
+			return candidate
+		}
+	}
+	return ""
 }
 
 func parseIssueSynthJSON(raw string) (issueSynthJSON, error) {

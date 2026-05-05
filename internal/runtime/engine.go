@@ -273,11 +273,11 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			FinalSummary: "read-web research completed",
 			Transport:    "slack",
 		}
-	} else if capabilityID == "read-github" {
+	} else if isReadGitHubCapability(capabilityID) {
 		if err := e.publisher.PublishUpdate(task, "Querying GitHub repos/code/files..."); err != nil {
 			return task, err
 		}
-		p, err := e.runReadGitHub(ctx, task)
+		p, err := e.runReadGitHubCapability(ctx, task, capabilityID)
 		if err != nil {
 			_ = e.publisher.ClearInboundReaction(task)
 			return task, err

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -37,6 +38,13 @@ func (e *Engine) runCreateDoc(ctx context.Context, task Task) (RenderPayload, er
 	}
 
 	req := parseCreateDocRequest(task.RequestText)
+	if email, source, err := injectCreateDocRequesterEditor(ctx, &req, task, resolveCreateDocRequesterEmail); err != nil {
+		if strings.TrimSpace(task.HumanUserID) != "" {
+			log.Printf("create-doc: requester editor lookup skipped user=%s err=%v", strings.TrimSpace(task.HumanUserID), err)
+		}
+	} else {
+		log.Printf("create-doc: requester editor added user=%s email=%s source=%s", strings.TrimSpace(task.HumanUserID), strings.TrimSpace(email), strings.TrimSpace(source))
+	}
 	threadCtx := ""
 	if e.threadContext != nil {
 		threadCtx = strings.TrimSpace(e.threadContext(ctx, task))
