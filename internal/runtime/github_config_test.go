@@ -8,18 +8,18 @@ import (
 	"testing"
 )
 
-func TestLoadGitHubConfigTokenPrefersOrgOverPersonal(t *testing.T) {
-	t.Setenv("ROSS_ORG_GH_TOKEN", "org-pat")
+func TestLoadGitHubConfigTokenPersonalPath(t *testing.T) {
 	t.Setenv("ROSS_PERSONAL_GH_TOKEN", "user-pat")
+	t.Setenv("ROSS_ORG_GH_TOKEN", "org-pat-should-be-ignored")
 	cfg := LoadGitHubConfigForEmployee("ross")
-	if cfg.Token != "org-pat" {
-		t.Fatalf("expected ROSS_ORG_GH_TOKEN before ROSS_PERSONAL_GH_TOKEN, got %q", cfg.Token)
+	if cfg.Token != "user-pat" {
+		t.Fatalf("expected ROSS_PERSONAL_GH_TOKEN (org slot no longer used), got %q", cfg.Token)
 	}
 }
 
 func TestLoadGitHubConfigExplicitGithubTokenWins(t *testing.T) {
 	t.Setenv("ROSS_GITHUB_TOKEN", "explicit")
-	t.Setenv("ROSS_ORG_GH_TOKEN", "org-pat")
+	t.Setenv("ROSS_PERSONAL_GH_TOKEN", "user-pat")
 	cfg := LoadGitHubConfigForEmployee("ross")
 	if cfg.Token != "explicit" {
 		t.Fatalf("expected ROSS_GITHUB_TOKEN to win, got %q", cfg.Token)
@@ -36,13 +36,11 @@ func TestResolveGitHubOwnerPrefersConfiguredOwner(t *testing.T) {
 	}
 }
 
-func TestResolveGitHubOwnerUsesOrgList(t *testing.T) {
+func TestResolveGitHubOwnerUsesAuthenticatedUser(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/user/orgs":
-			_, _ = w.Write([]byte(`[{"login":"AnotherOrg"},{"login":"BimRoss"}]`))
 		case "/user":
-			_, _ = w.Write([]byte(`{"login":"fallback-user"}`))
+			_, _ = w.Write([]byte(`{"login":"token-user-login"}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -54,21 +52,14 @@ func TestResolveGitHubOwnerUsesOrgList(t *testing.T) {
 	defer func() { _ = os.Setenv("GITHUB_API_BASE_URL", prev) }()
 
 	cfg := GitHubEnvConfig{Token: "token"}
-	if got := ResolveGitHubOwner(context.Background(), cfg); got != "BimRoss" {
-		t.Fatalf("expected preferred org owner BimRoss, got %q", got)
+	if got := ResolveGitHubOwner(context.Background(), cfg); got != "token-user-login" {
+		t.Fatalf("expected /user login, got %q", got)
 	}
 }
 
-func TestResolveGitHubOwnerFallsBackToUser(t *testing.T) {
+func TestResolveGitHubOwnerFallsBackEmptyOnUserEndpointFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/user/orgs":
-			_, _ = w.Write([]byte(`[]`))
-		case "/user":
-			_, _ = w.Write([]byte(`{"login":"solo-user"}`))
-		default:
-			http.NotFound(w, r)
-		}
+		http.Error(w, "nope", http.StatusForbidden)
 	}))
 	defer srv.Close()
 
@@ -77,21 +68,18 @@ func TestResolveGitHubOwnerFallsBackToUser(t *testing.T) {
 	defer func() { _ = os.Setenv("GITHUB_API_BASE_URL", prev) }()
 
 	cfg := GitHubEnvConfig{Token: "token"}
-	if got := ResolveGitHubOwner(context.Background(), cfg); got != "solo-user" {
-		t.Fatalf("expected fallback user owner, got %q", got)
+	if got := ResolveGitHubOwner(context.Background(), cfg); got != "" {
+		t.Fatalf("expected empty owner when /user fails, got %q", got)
 	}
 }
 
-func TestResolveGitHubOwnerWithScopeFallsBackToUser(t *testing.T) {
+func TestResolveGitHubOwnerWithScopeFallsBackToUserLogin(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/user/orgs":
-			_, _ = w.Write([]byte(`[]`))
-		case "/user":
+		if r.URL.Path == "/user" {
 			_, _ = w.Write([]byte(`{"login":"solo-user"}`))
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		http.NotFound(w, r)
 	}))
 	defer srv.Close()
 
@@ -109,6 +97,8 @@ func TestResolveGitHubOwnerWithScopeFallsBackToUser(t *testing.T) {
 func TestProbeGitHubAccessMissingToken(t *testing.T) {
 	t.Setenv("ROSS_GITHUB_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("ROSS_PERSONAL_GH_TOKEN", "")
+	t.Setenv("PERSONAL_GH_TOKEN", "")
 	probe := ProbeGitHubAccess(context.Background(), "ross")
 	if probe.TokenConfigured {
 		t.Fatalf("expected token to be missing")
@@ -121,9 +111,12 @@ func TestProbeGitHubAccessMissingToken(t *testing.T) {
 func TestProbeGitHubAccessOrgScopeSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/user/orgs":
-			_, _ = w.Write([]byte(`[{"login":"BimRoss"}]`))
 		case "/orgs/BimRoss/repos":
+			q := r.URL.Query()
+			if q.Get("type") != "all" || q.Get("per_page") != "1" {
+				http.Error(w, "bad query", http.StatusBadRequest)
+				return
+			}
 			_, _ = w.Write([]byte(`[]`))
 		case "/user":
 			_, _ = w.Write([]byte(`{"login":"fallback-user"}`))
@@ -138,6 +131,8 @@ func TestProbeGitHubAccessOrgScopeSuccess(t *testing.T) {
 	defer func() { _ = os.Setenv("GITHUB_API_BASE_URL", prevBase) }()
 
 	t.Setenv("ROSS_GITHUB_TOKEN", "token")
+	t.Setenv("GITHUB_OWNER", "BimRoss")
+	defer func() { _ = os.Unsetenv("GITHUB_OWNER") }()
 	probe := ProbeGitHubAccess(context.Background(), "ross")
 	if !probe.TokenConfigured {
 		t.Fatalf("expected token configured")
@@ -146,7 +141,7 @@ func TestProbeGitHubAccessOrgScopeSuccess(t *testing.T) {
 		t.Fatalf("expected scope list check success, got err=%s warning=%s", probe.Error, probe.Warning)
 	}
 	if probe.Owner != "BimRoss" || probe.Scope != "org" {
-		t.Fatalf("expected BimRoss/org, got %s/%s", probe.Owner, probe.Scope)
+		t.Fatalf("expected BimRoss/org when GITHUB_OWNER is set, got %s/%s", probe.Owner, probe.Scope)
 	}
 }
 
@@ -203,11 +198,9 @@ func TestResolveGitHubOwnerWithScopeRespectsExplicitUserScope(t *testing.T) {
 func TestProbeGitHubAccessUserScopeFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/user/orgs":
-			_, _ = w.Write([]byte(`[]`))
 		case "/user":
 			_, _ = w.Write([]byte(`{"login":"solo-user"}`))
-		case "/users/solo-user/repos":
+		case "/user/repos":
 			http.Error(w, `{"message":"Requires authentication"}`, http.StatusForbidden)
 		default:
 			http.NotFound(w, r)
@@ -220,6 +213,7 @@ func TestProbeGitHubAccessUserScopeFailure(t *testing.T) {
 	defer func() { _ = os.Setenv("GITHUB_API_BASE_URL", prevBase) }()
 
 	t.Setenv("ROSS_GITHUB_TOKEN", "token")
+	t.Setenv("GITHUB_OWNER", "")
 	probe := ProbeGitHubAccess(context.Background(), "ross")
 	if !probe.TokenConfigured {
 		t.Fatalf("expected token configured")

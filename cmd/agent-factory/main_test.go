@@ -14,8 +14,12 @@ func TestIsGitHubLikelyFollowUp(t *testing.T) {
 		raw  string
 		want bool
 	}{
-		{name: "github keyword", raw: "how many commits does slack-orchestrator have?", want: true},
-		{name: "repo slug cue", raw: "tell me about makeacompany-ai status", want: true},
+		{name: "commits plus hyphenated repo name", raw: "how many commits does slack-orchestrator have?", want: true},
+		{name: "owner slash repo", raw: "what is the status of bimross/agent-factory?", want: true},
+		{name: "github host", raw: "can you check github.com/bimross/cursor-rules", want: true},
+		{name: "prs shorthand", raw: "any open PRs?", want: true},
+		{name: "hyphen slug without scm cue", raw: "tell me about makeacompany-ai status", want: false},
+		{name: "company channel slug intro", raw: "Welcome to #grant-llc! This channel is your company workspace.", want: false},
 		{name: "non github message", raw: "what should we prioritize this week?", want: false},
 	}
 	for _, tc := range tests {
@@ -24,6 +28,15 @@ func TestIsGitHubLikelyFollowUp(t *testing.T) {
 				t.Fatalf("isGitHubLikelyFollowUp(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEmployeeHandlesGitHubFollowupHints(t *testing.T) {
+	if !employeeHandlesGitHubFollowupHints("ross") {
+		t.Fatalf("expected ross")
+	}
+	if employeeHandlesGitHubFollowupHints("alex") {
+		t.Fatalf("did not expect alex")
 	}
 }
 

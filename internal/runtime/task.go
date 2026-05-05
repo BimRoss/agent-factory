@@ -43,6 +43,8 @@ type RenderPayload struct {
 	// TermsSkillPending, when set, enables employee-factory–style Redis skill_confirmation for terms_accept
 	// once the Slack final message posts successfully (see PublishFinal).
 	TermsSkillPending *TermsSkillPendingAnchor
+	// EmailSkillPending stores queued Gmail payload written to Redis after the confirmation Slack message posts.
+	EmailSkillPending *EmailSkillPendingAnchor
 }
 
 type TaskStore interface {

@@ -253,6 +253,17 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			return task, err
 		}
 		plan.FinalPayload = p
+	} else if isCreateGitHubRepoCapability(capabilityID) {
+		if err := e.publisher.PublishUpdate(task, "Creating GitHub repository…"); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runCreateGitHubRepo(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
 	} else if capabilityID == "read-web" {
 		query := strings.TrimSpace(task.RequestText)
 		if query == "" {
@@ -298,6 +309,18 @@ func (e *Engine) ExecuteCapability(ctx context.Context, task Task, capabilityID 
 			return task, err
 		}
 		plan.FinalPayload = p
+	} else if capabilityID == "create-email" {
+		if err := e.publisher.PublishUpdate(task, "Drafting email preview…"); err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		p, err := e.runCreateEmail(ctx, task)
+		if err != nil {
+			_ = e.publisher.ClearInboundReaction(task)
+			return task, err
+		}
+		plan.FinalPayload = p
+		plan.ProgressUpdates = nil
 	} else if capabilityID == "create-company" {
 		if err := e.publisher.PublishUpdate(task, "Creating company channel..."); err != nil {
 			_ = e.publisher.ClearInboundReaction(task)
@@ -396,6 +419,15 @@ func displayEmployeeName(employeeID string) string {
 func isCreateIssueCapability(capabilityID string) bool {
 	switch normalizeID(capabilityID) {
 	case "create-issue", "create-github-issue":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCreateGitHubRepoCapability(capabilityID string) bool {
+	switch normalizeID(capabilityID) {
+	case "create-github-repo", "create-repo":
 		return true
 	default:
 		return false

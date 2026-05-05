@@ -1,0 +1,94 @@
+package emailaction
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestInferConversationalEmailSubject(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{
+			raw:  `<@U123> send an email to me, subject is Testers, with 3 paragraphs describing why`,
+			want: "Testers",
+		},
+		{
+			raw:  `send email to me title is "Quarterly recap", instruction: keep it short`,
+			want: "Quarterly recap",
+		},
+		{
+			raw:  `draft email subject line is Hello World; body: foo`,
+			want: "Hello World",
+		},
+		{
+			raw:  `send email instruction: hello`,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		got := inferConversationalEmailSubject(tc.raw)
+		if got != tc.want {
+			t.Fatalf("inferConversationalEmailSubject(%q)=%q want %q", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestParseRecipientEmailsSelfAliases(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"me", "myself", "self", "ME "} {
+		got, err := ParseRecipientEmails(raw)
+		if err != nil {
+			t.Fatalf("ParseRecipientEmails(%q): %v", raw, err)
+		}
+		if len(got) != 1 || got[0] != strings.TrimSpace(strings.ToLower(raw)) {
+			t.Fatalf("ParseRecipientEmails(%q)=%v want single alias token", raw, got)
+		}
+	}
+}
+
+func TestParseSendEmailActionConversationalSubjectStripsFromInstruction(t *testing.T) {
+	t.Parallel()
+	raw := `<@U0ABCD> send an email to me, subject is Testers, with 3 paragraphs about woodworking`
+	action, matched, err := ParseSendEmailAction(raw)
+	if err != nil || !matched {
+		t.Fatalf("parse: matched=%v err=%v", matched, err)
+	}
+	if strings.TrimSpace(action.Subject) != "Testers" {
+		t.Fatalf("subject=%q want Testers", action.Subject)
+	}
+	got := strings.TrimSpace(action.BodyInstruction)
+	if strings.Contains(strings.ToLower(got), "subject is testers") {
+		t.Fatalf("instruction should not repeat subject phrase: %q", got)
+	}
+	if got == "" {
+		t.Fatal("expected body instruction remainder")
+	}
+}
+
+func TestParseSendEmailPatch_ContinuationFields(t *testing.T) {
+	t.Parallel()
+	action, matched, err := ParseSendEmailPatch("button is Join now, link is https://example.com/welcome")
+	if err != nil || !matched {
+		t.Fatalf("patch parse: matched=%v err=%v", matched, err)
+	}
+	if strings.TrimSpace(action.CTAText) != "Join now" {
+		t.Fatalf("cta text=%q want %q", action.CTAText, "Join now")
+	}
+	if strings.TrimSpace(action.CTAURL) != "https://example.com/welcome" {
+		t.Fatalf("cta url=%q", action.CTAURL)
+	}
+}
+
+func TestParseSendEmailPatch_RejectsBadRecipient(t *testing.T) {
+	t.Parallel()
+	_, matched, err := ParseSendEmailPatch("to: not-an-email")
+	if !matched {
+		t.Fatal("expected matched continuation fields")
+	}
+	if err == nil {
+		t.Fatal("expected invalid recipient error")
+	}
+}

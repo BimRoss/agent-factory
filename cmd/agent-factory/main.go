@@ -26,9 +26,16 @@ import (
 )
 
 var (
-	reGitHubConversationCue = regexp.MustCompile(`(?i)\b(github|repo|repository|repositories|commit|commits|pull request|pull requests|prs|branches|branch|org:|user:|owner/repo)\b`)
-	reGitHubRepoSlugCue     = regexp.MustCompile(`\b[A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+\b`)
-	githubThreadHints       = newThreadCapabilityHints(defaultGitHubFollowupStickyTTL())
+	// Strong signals: URLs/names, PR language, owner/repo paths, gh-style keys.
+	reGitHubHostOrWord = regexp.MustCompile(`(?i)github\.com|\bgithub\b`)
+	reGitHubPRTalk     = regexp.MustCompile(`(?i)\bpull\s+requests?\b|\bprs\b`)
+	// Two path segments with a slash — matches bimross/agent-factory, not grant-llc.
+	reGitHubOwnerRepoSlash = regexp.MustCompile(`\b[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\b`)
+	reGitHubCLIKey         = regexp.MustCompile(`(?i)\b(?:org|user):`)
+	// Weaker: hyphenated project slug only counts with SCM-flavored verbs (avoids #grant-llc intros).
+	reGitHubWorkCue     = regexp.MustCompile(`(?i)\b(?:commits?|pull\s+requests?|prs|branches?|repositories?|\brepos?\b)\b`)
+	reHyphenatedNameCue = regexp.MustCompile(`\b[A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+\b`)
+	githubThreadHints   = newThreadCapabilityHints(defaultGitHubFollowupStickyTTL())
 )
 
 func main() {
@@ -271,6 +278,22 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 	capabilityID := strings.TrimSpace(event.Decision.ToolID)
 	kind := normalizeID(event.Decision.Kind)
 
+	if normalizeID(employeeID) == "joanne" && strings.TrimSpace(capabilityID) == "" {
+		anchorTS := effectiveThreadTS(event.Message)
+		api := slackClients["joanne"]
+		if api == nil {
+			api = slackClients[normalizeID(employeeID)]
+		}
+		if runtime.MaybeHandleEmailConfirmationPlaintext(ctx, api,
+			strings.TrimSpace(event.Message.ChannelID),
+			strings.TrimSpace(event.Message.UserID),
+			anchorTS,
+			strings.TrimSpace(event.Message.Text),
+		) {
+			return nil
+		}
+	}
+
 	taskID := deriveTaskID(event)
 	traceID := firstNonEmpty(event.EffectiveTraceID(), taskID)
 	anchorTS := effectiveThreadTS(event.Message)
@@ -290,8 +313,9 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 		HumanUserID:  strings.TrimSpace(event.Message.UserID),
 		Mode:         firstNonEmpty(modeFromDecision(event), "conversation"),
 	}
-	if capabilityID == "" {
-		stickyCapability, stickyOK := githubThreadHints.recall(task.OwnerEmployeeID, task.ThreadAnchor, time.Now().UTC())
+	if capabilityID == "" && employeeHandlesGitHubFollowupHints(employeeID) {
+		procEmp := normalizeID(employeeID)
+		stickyCapability, stickyOK := githubThreadHints.recall(procEmp, task.ThreadAnchor, time.Now().UTC())
 		if stickyOK && stickyCapability != "" && isGitHubLikelyFollowUp(task.RequestText) {
 			capabilityID = stickyCapability
 			log.Printf(
@@ -319,8 +343,8 @@ func handleOrchestratorPayload(ctx context.Context, cfg runtime.AppConfig, engin
 			return fmt.Errorf("execute capability %s for task %s: %w", capabilityID, taskID, err)
 		}
 		maybePublishPipelineContinuation(cfg, event, executedTask)
-		if isReadGitHubCapabilityID(capabilityID) {
-			githubThreadHints.remember(task.OwnerEmployeeID, task.ThreadAnchor, capabilityID, time.Now().UTC())
+		if isReadGitHubCapabilityID(capabilityID) && employeeHandlesGitHubFollowupHints(employeeID) {
+			githubThreadHints.remember(normalizeID(employeeID), executedTask.ThreadAnchor, capabilityID, time.Now().UTC())
 		}
 		log.Printf("processed orchestrator event employee=%s task=%s tool=%s trace=%s kind=%s",
 			employeeID,
@@ -416,15 +440,30 @@ func appendGitHubNoToolContext(raw, employeeID string) string {
 	return trimmed + "\n\n" + note
 }
 
+// employeeHandlesGitHubFollowupHints limits sticky read-github routing and the
+// "no live GitHub tool" system note to the automation/engineering pod that owns GitHub skills.
+func employeeHandlesGitHubFollowupHints(employeeID string) bool {
+	return normalizeID(employeeID) == "ross"
+}
+
 func isGitHubLikelyFollowUp(raw string) bool {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return false
 	}
-	if reGitHubConversationCue.MatchString(raw) {
+	if reGitHubHostOrWord.MatchString(raw) {
 		return true
 	}
-	return reGitHubRepoSlugCue.MatchString(raw)
+	if reGitHubPRTalk.MatchString(raw) {
+		return true
+	}
+	if reGitHubOwnerRepoSlash.MatchString(raw) {
+		return true
+	}
+	if reGitHubCLIKey.MatchString(raw) {
+		return true
+	}
+	return reGitHubWorkCue.MatchString(raw) && reHyphenatedNameCue.MatchString(raw)
 }
 
 func isReadGitHubCapabilityID(capabilityID string) bool {
@@ -1169,6 +1208,9 @@ func (s *statusPublisher) PublishFinal(task runtime.Task, payload runtime.Render
 	}
 	if err := runtime.CommitTermsSkillPendingAnchor(context.Background(), payload.TermsSkillPending); err != nil {
 		log.Printf("status publisher: terms skill pending redis err=%v task=%s", err, task.ID)
+	}
+	if err := runtime.CommitEmailSkillPendingAnchor(context.Background(), payload.EmailSkillPending); err != nil {
+		log.Printf("status publisher: email skill pending redis err=%v task=%s", err, task.ID)
 	}
 	return nil
 }

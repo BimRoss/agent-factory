@@ -52,7 +52,6 @@ All transitions emit structured status events.
 
 - No new employees beyond current 6
 - No net-new production skills
-- Phase subset for packaged parity skills excludes `create-email-welcome`
 - `read-web` and `read-skills` are runtime-native capabilities (not first-pass packaged skills)
 - No non-Slack transport implementation
 - Preserve current output forms and channel-knowledge behavior

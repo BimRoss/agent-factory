@@ -521,6 +521,13 @@ func (s *Server) patchCompanyChannel(ctx context.Context, channelID string, auto
 func (s *Server) upsertDiscoveredChannels(ctx context.Context, rows []companyChannel) ([]string, error) {
 	upserted := make([]string, 0, len(rows))
 	for _, row := range rows {
+		// Admin UI + makeacompany-ai backend send Slack channel label as json "name"; match that shape so
+		// proxied POST /v1/admin/company-channels/discover preserves display names (see makeacompany-ai store).
+		if dn := strings.TrimSpace(row.DisplayName); dn == "" {
+			row.DisplayName = strings.TrimSpace(row.Name)
+		}
+		row.Name = ""
+
 		channelID := strings.TrimSpace(row.ChannelID)
 		if channelID == "" {
 			continue
@@ -533,7 +540,11 @@ func (s *Server) upsertDiscoveredChannels(ctx context.Context, rows []companyCha
 			if row.CompanySlug == "" {
 				row.CompanySlug = existing.CompanySlug
 			}
-			if row.DisplayName == "" {
+			if slackDn := strings.TrimSpace(row.DisplayName); slackDn != "" {
+				if slug := slugFromSlackChannelDisplayName(slackDn); slug != "" && strings.TrimSpace(existing.CompanySlug) == "" {
+					row.CompanySlug = slug
+				}
+			} else {
 				row.DisplayName = existing.DisplayName
 			}
 			if len(row.OwnerIDs) == 0 {
@@ -608,8 +619,10 @@ func (s *Server) requireInternal(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type companyChannel struct {
-	CompanySlug                string   `json:"company_slug"`
-	ChannelID                  string   `json:"channel_id"`
+	CompanySlug string `json:"company_slug"`
+	ChannelID   string `json:"channel_id"`
+	// Name is the Slack channel name from admin discover payloads (json "name"); not persisted when empty.
+	Name                       string   `json:"name,omitempty"`
 	DisplayName                string   `json:"display_name,omitempty"`
 	OwnerIDs                   []string `json:"owner_ids,omitempty"`
 	ThreadsEnabled             bool     `json:"threads_enabled"`

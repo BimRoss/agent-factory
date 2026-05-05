@@ -34,13 +34,13 @@ func TestLiveGitHubCapabilitiesWithEnvToken(t *testing.T) {
 			name:               "read-github",
 			capabilityID:       "read-github",
 			requestText:        "<@U0ATGEYJ18T> are you able to read github?",
-			summaryMustContain: "repo search",
+			summaryMustContain: "completed",
 		},
 		{
 			name:               "read-github-repos",
 			capabilityID:       "read-github-repos",
 			requestText:        "<@U0ATGEYJ18T> what repos can you see on github?",
-			summaryMustContain: "repo",
+			summaryMustContain: "repo list completed",
 		},
 		{
 			name:               "read-github-repo-meta",

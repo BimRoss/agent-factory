@@ -91,7 +91,7 @@ func HandleTermsInteraction(ctx context.Context, api *slack.Client, cb slack.Int
 		if rdb != nil {
 			_ = ClearTermsSkillPendingWithClient(ctx, rdb, ch, action.RequestUserID, threadTS)
 		}
-		finalizeTermsButtonMessage(ctx, api, ch, messageTS, cb, skillConfirmationDecisionConfirm, clickUser)
+		finalizeSkillConfirmationButtonMessage(ctx, api, ch, messageTS, cb, skillConfirmationDecisionConfirm, clickUser)
 		epilogue := ""
 		if line, cerr := RunCreateCompanyAfterTermsAccept(ctx, api, clickUser); cerr != nil {
 			log.Printf("terms_interactive: auto create-company slack_user=%s err=%v", clickUser, cerr)
@@ -110,7 +110,7 @@ func HandleTermsInteraction(ctx context.Context, api *slack.Client, cb slack.Int
 		if rdb != nil {
 			_ = ClearTermsSkillPendingWithClient(ctx, rdb, ch, action.RequestUserID, threadTS)
 		}
-		finalizeTermsButtonMessage(ctx, api, ch, messageTS, cb, skillConfirmationDecisionCancel, clickUser)
+		finalizeSkillConfirmationButtonMessage(ctx, api, ch, messageTS, cb, skillConfirmationDecisionCancel, clickUser)
 		postTermsThreadMessage(ctx, api, ch, threadTS, humansTermsRejectedText(joanneWorkspaceMention()))
 		return true
 	default:
@@ -118,7 +118,7 @@ func HandleTermsInteraction(ctx context.Context, api *slack.Client, cb slack.Int
 	}
 }
 
-func finalizeTermsButtonMessage(parent context.Context, api *slack.Client, channelID, messageTS string, cb slack.InteractionCallback, decision skillConfirmationDecision, clickUserID string) {
+func finalizeSkillConfirmationButtonMessage(parent context.Context, api *slack.Client, channelID, messageTS string, cb slack.InteractionCallback, decision skillConfirmationDecision, clickUserID string) {
 	channelID = strings.TrimSpace(channelID)
 	messageTS = strings.TrimSpace(messageTS)
 	if channelID == "" || messageTS == "" || api == nil {
@@ -149,7 +149,7 @@ func finalizeTermsButtonMessage(parent context.Context, api *slack.Client, chann
 		slack.MsgOptionBlocks(blocks...),
 	)
 	if err != nil {
-		log.Printf("terms_interactive: update confirmation message ts=%s err=%v", messageTS, err)
+		log.Printf("skill_confirmation: update confirmation message ts=%s err=%v", messageTS, err)
 	}
 }
 

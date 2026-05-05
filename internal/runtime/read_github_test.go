@@ -44,6 +44,28 @@ func TestParseReadGitHubRequestCodeSearch(t *testing.T) {
 	}
 }
 
+func TestParseReadGitHubRequestCodeSearchNaturalLanguage(t *testing.T) {
+	cfg := GitHubEnvConfig{Owner: "BimRoss"}
+	raw := "<@U0ATGEYJ18T> what references are there to admins in makeacompany-ai code?"
+	req := parseReadGitHubRequest(raw, cfg, readGitHubModeCodeSearch)
+	if req.Mode != readGitHubModeCodeSearch {
+		t.Fatalf("expected mode %q, got %q", readGitHubModeCodeSearch, req.Mode)
+	}
+	if req.Query != "admins" {
+		t.Fatalf("expected stripped search term admins, got %q", req.Query)
+	}
+	if req.Owner != "BimRoss" || req.Repo != "makeacompany-ai" {
+		t.Fatalf("unexpected owner/repo: %s/%s", req.Owner, req.Repo)
+	}
+}
+
+func TestSanitizeGitHubCodeSearchQueryStripsRepoSlugWhenScoped(t *testing.T) {
+	got := sanitizeGitHubCodeSearchQuery("admins makeacompany-ai", "BimRoss", "makeacompany-ai")
+	if got != "admins" {
+		t.Fatalf("expected admins, got %q", got)
+	}
+}
+
 func TestParseReadGitHubRequestRepoField(t *testing.T) {
 	cfg := GitHubEnvConfig{}
 	raw := "mode: file\nrepo: BimRoss/agent-factory\npath: internal/runtime/engine.go\nref: main"
@@ -251,7 +273,7 @@ func TestReadGitHubPreflightEndpointCommits(t *testing.T) {
 		Repo:  "slack-orchestrator",
 		Ref:   "main",
 	}
-	endpoint, modeLabel, err := readGitHubPreflightEndpoint(cfg, req)
+	endpoint, modeLabel, err := readGitHubPreflightEndpoint(context.Background(), cfg, req)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}

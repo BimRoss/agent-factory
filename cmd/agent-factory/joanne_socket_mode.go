@@ -147,6 +147,9 @@ func handleJoanneSocketEvent(ctx context.Context, sm *socketmode.Client, api *sl
 				}
 			}()
 			handled := runtime.HandleTermsInteraction(context.Background(), api, ic)
+			if !handled {
+				handled = runtime.HandleEmailInteraction(context.Background(), api, ic)
+			}
 			if !handled && ic.Type != "" {
 				log.Printf("joanne socket: ignored interactive payload type=%s callback_id=%s envelope_id=%s",
 					ic.Type, ic.CallbackID, envelopeID)

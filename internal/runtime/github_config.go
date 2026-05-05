@@ -3,14 +3,14 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
 
-// GitHubEnvConfig holds repo + auth for GitHub REST calls (create-issue, etc.).
-// Token resolution: EMPLOYEE_GITHUB_TOKEN, then
-// EMPLOYEE_ORG_GH_TOKEN (org-wide PAT, preferred over personal), then EMPLOYEE_PERSONAL_GH_TOKEN,
-// then global GITHUB_TOKEN, ORG_GH_TOKEN, PERSONAL_GH_TOKEN.
+// GitHubEnvConfig holds repo + auth for GitHub REST calls (create-issue, read-github*, etc.).
+// Token resolution (personal PAT / unified token — no separate org PAT slot):
+// EMPLOYEE_GITHUB_TOKEN, EMPLOYEE_PERSONAL_GH_TOKEN, global GITHUB_TOKEN, PERSONAL_GH_TOKEN.
 type GitHubEnvConfig struct {
 	Token      string
 	Owner      string
@@ -45,10 +45,8 @@ func LoadGitHubConfigForEmployee(employeeID string) GitHubEnvConfig {
 
 	token := firstNonEmpty(
 		os.Getenv(prefix+"GITHUB_TOKEN"),
-		os.Getenv(prefix+"ORG_GH_TOKEN"),
 		os.Getenv(prefix+"PERSONAL_GH_TOKEN"),
 		os.Getenv("GITHUB_TOKEN"),
-		os.Getenv("ORG_GH_TOKEN"),
 		os.Getenv("PERSONAL_GH_TOKEN"),
 	)
 	owner := firstNonEmpty(
@@ -80,10 +78,6 @@ type githubOwnerUser struct {
 	Login string `json:"login"`
 }
 
-type githubOwnerOrg struct {
-	Login string `json:"login"`
-}
-
 func ResolveGitHubOwner(ctx context.Context, cfg GitHubEnvConfig) string {
 	if owner := strings.TrimSpace(cfg.Owner); owner != "" {
 		return owner
@@ -91,13 +85,6 @@ func ResolveGitHubOwner(ctx context.Context, cfg GitHubEnvConfig) string {
 	token := strings.TrimSpace(cfg.Token)
 	if token == "" {
 		return ""
-	}
-
-	var orgs []githubOwnerOrg
-	if err := githubGETJSON(ctx, token, "/user/orgs?per_page=100", &orgs); err == nil {
-		if owner := pickPreferredOrgOwner(orgs); owner != "" {
-			return owner
-		}
 	}
 
 	var user githubOwnerUser
@@ -138,13 +125,6 @@ func ResolveGitHubOwnerWithScope(ctx context.Context, cfg GitHubEnvConfig) (owne
 		return "", ""
 	}
 
-	var orgs []githubOwnerOrg
-	if err := githubGETJSON(ctx, token, "/user/orgs?per_page=100", &orgs); err == nil {
-		if owner := pickPreferredOrgOwner(orgs); owner != "" {
-			return owner, "org"
-		}
-	}
-
 	var user githubOwnerUser
 	if err := githubGETJSON(ctx, token, "/user", &user); err == nil {
 		if login := strings.TrimSpace(user.Login); login != "" {
@@ -152,19 +132,6 @@ func ResolveGitHubOwnerWithScope(ctx context.Context, cfg GitHubEnvConfig) (owne
 		}
 	}
 	return "", ""
-}
-
-func pickPreferredOrgOwner(orgs []githubOwnerOrg) string {
-	if len(orgs) == 0 {
-		return ""
-	}
-	for _, org := range orgs {
-		login := strings.TrimSpace(org.Login)
-		if strings.EqualFold(login, "bimross") {
-			return login
-		}
-	}
-	return strings.TrimSpace(orgs[0].Login)
 }
 
 func ProbeGitHubAccess(ctx context.Context, employeeID string) GitHubAccessProbe {
@@ -207,7 +174,11 @@ func ProbeGitHubAccess(ctx context.Context, employeeID string) GitHubAccessProbe
 
 func githubScopeProbeEndpoint(owner, scope string) (endpoint, scopeLabel string) {
 	if strings.EqualFold(strings.TrimSpace(scope), "user") {
-		return "/users/" + strings.TrimSpace(owner) + "/repos?per_page=1&type=owner", "user"
+		v := url.Values{}
+		v.Set("per_page", "1")
+		v.Set("sort", "updated")
+		v.Set("affiliation", "owner,collaborator,organization_member")
+		return "/user/repos?" + v.Encode(), "user"
 	}
 	return "/orgs/" + strings.TrimSpace(owner) + "/repos?per_page=1&type=all", "org"
 }

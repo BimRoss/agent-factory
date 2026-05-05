@@ -11,7 +11,7 @@ import (
 // read-github mode so shared read-github-* capabilities fail fast with a clear
 // auth/permission explanation before execution logic runs.
 func preflightReadGitHubRequest(ctx context.Context, cfg GitHubEnvConfig, req readGitHubRequest) error {
-	endpoint, modeLabel, err := readGitHubPreflightEndpoint(cfg, req)
+	endpoint, modeLabel, err := readGitHubPreflightEndpoint(ctx, cfg, req)
 	if err != nil {
 		return err
 	}
@@ -35,23 +35,20 @@ func preflightReadGitHubRequest(ctx context.Context, cfg GitHubEnvConfig, req re
 	return nil
 }
 
-func readGitHubPreflightEndpoint(cfg GitHubEnvConfig, req readGitHubRequest) (endpoint string, modeLabel string, err error) {
+func readGitHubPreflightEndpoint(ctx context.Context, cfg GitHubEnvConfig, req readGitHubRequest) (endpoint string, modeLabel string, err error) {
 	mode := normalizeReadGitHubMode(req.Mode)
 	if mode == "" {
 		mode = readGitHubModeRepoSearch
 	}
 	switch mode {
 	case readGitHubModeRepoSearch:
-		query := strings.TrimSpace(req.Query)
-		if query == "" {
-			if strings.TrimSpace(req.Org) != "" {
-				query = "org:" + strings.TrimSpace(req.Org)
-			} else if strings.TrimSpace(cfg.Owner) != "" {
-				query = defaultGitHubOwnerScopePrefix(cfg.OwnerScope) + ":" + strings.TrimSpace(cfg.Owner)
+		query := buildReadGitHubRepoSearchQuery(req, cfg)
+		if githubRepoInventoryUsesListAPI(query) {
+			ep, _, err := githubRepoListEndpointForInventory(ctx, cfg.Token, cfg, req, query)
+			if err != nil {
+				return "", mode, err
 			}
-		}
-		if strings.TrimSpace(query) == "" {
-			query = "stars:>0"
+			return ep, mode, nil
 		}
 		params := url.Values{}
 		params.Set("q", query)

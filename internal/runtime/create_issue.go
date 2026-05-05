@@ -45,7 +45,7 @@ func (e *Engine) runCreateIssue(task Task) (RenderPayload, error) {
 	ctx := context.Background()
 	cfg := LoadGitHubConfigForEmployee(task.OwnerEmployeeID)
 	if cfg.Token == "" {
-		return RenderPayload{}, fmt.Errorf("create-issue: set %s_ORG_GH_TOKEN (preferred), %s_PERSONAL_GH_TOKEN, or %s_GITHUB_TOKEN / GITHUB_TOKEN", strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)))
+		return RenderPayload{}, fmt.Errorf("create-issue: set %s_GITHUB_TOKEN, %s_PERSONAL_GH_TOKEN, GITHUB_TOKEN, or PERSONAL_GH_TOKEN", strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)))
 	}
 	cfg.Owner, cfg.OwnerScope = ResolveGitHubOwnerWithScope(ctx, cfg)
 

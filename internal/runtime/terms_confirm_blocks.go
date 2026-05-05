@@ -14,6 +14,7 @@ const (
 	skillConfirmationActionIDCancel  = "joanne_confirmation_cancel"
 	skillConfirmationActionBlockID   = "joanne_confirmation_actions"
 	skillConfirmationTaskTermsWire   = "terms_accept"
+	skillConfirmationTaskEmailWire   = "email_send"
 )
 
 type skillConfirmationDecision string

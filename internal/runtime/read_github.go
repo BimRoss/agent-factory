@@ -31,7 +31,9 @@ var (
 	reOwnerRepoPath    = regexp.MustCompile(`\b([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.\-/]+)\b`)
 	reSlackUserMention = regexp.MustCompile(`<@[A-Z0-9]+>`)
 	reGitHubNoiseWords = regexp.MustCompile(`(?i)\b(can|could|would|should|please|you|your|our|my|the|a|an|to|for|at|about|look|check|scan|read|search|find|get|show|list|see|are|able|is|am|be|been|being|access|github|git|hub|repo|repos|repository|repositories|how|many|do|we|have|in|on|org|organization|count|what|know|tell|me|us)\b`)
-	reRepoSlugToken    = regexp.MustCompile(`\b([A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+)\b`)
+	// Extra scaffolding stripped only for /search/code NL questions (not repo inventory).
+	reGitHubCodeSearchNoise = regexp.MustCompile(`(?i)\b(references|reference|referring|there|here|stuff|things|thing|anywhere|somewhere|appear|appears|appeared|mentioned|mentions|uses|using|used|inside|within|across|throughout|related|regarding|concerning|mostly|especially|including|example|examples|anything|something|someone|somewhat|snippets|snippet|symbols|symbol|codebase|basically|actually|probably|perhaps|please|just|also|very|really|quite|some|such|like|similar)\b|\bcode\b`)
+	reRepoSlugToken         = regexp.MustCompile(`\b([A-Za-z0-9][A-Za-z0-9._-]*-[A-Za-z0-9._-]+)\b`)
 )
 
 var genericRepoInventoryQueryWords = map[string]struct{}{
@@ -145,7 +147,7 @@ type githubBranchResponse struct {
 func (e *Engine) runReadGitHubCapability(ctx context.Context, task Task, capabilityID string) (RenderPayload, error) {
 	cfg := LoadGitHubConfigForEmployee(task.OwnerEmployeeID)
 	if strings.TrimSpace(cfg.Token) == "" {
-		return RenderPayload{}, fmt.Errorf("read-github: set %s_ORG_GH_TOKEN (preferred), %s_PERSONAL_GH_TOKEN, or %s_GITHUB_TOKEN / GITHUB_TOKEN", strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)))
+		return RenderPayload{}, fmt.Errorf("read-github: set %s_GITHUB_TOKEN, %s_PERSONAL_GH_TOKEN, GITHUB_TOKEN, or PERSONAL_GH_TOKEN", strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)), strings.ToUpper(strings.TrimSpace(task.OwnerEmployeeID)))
 	}
 	cfg.Owner, cfg.OwnerScope = ResolveGitHubOwnerWithScope(ctx, cfg)
 
@@ -178,22 +180,9 @@ func (e *Engine) runReadGitHub(ctx context.Context, task Task) (RenderPayload, e
 }
 
 func runGitHubRepoSearch(ctx context.Context, cfg GitHubEnvConfig, task Task, req readGitHubRequest) (RenderPayload, error) {
-	query := strings.TrimSpace(req.Query)
-	if query == "" {
-		if strings.TrimSpace(req.Org) != "" {
-			query = "org:" + strings.TrimSpace(req.Org)
-		} else if strings.TrimSpace(cfg.Owner) != "" {
-			query = defaultGitHubOwnerScopePrefix(cfg.OwnerScope) + ":" + strings.TrimSpace(cfg.Owner)
-		}
-	}
-	if req.Org != "" && !strings.Contains(query, "org:") {
-		query += " org:" + req.Org
-	}
-	if req.Org == "" && strings.TrimSpace(cfg.Owner) != "" && !hasExplicitGitHubScopeQualifier(query) {
-		query += " " + defaultGitHubOwnerScopePrefix(cfg.OwnerScope) + ":" + strings.TrimSpace(cfg.Owner)
-	}
-	if strings.TrimSpace(query) == "" {
-		query = "stars:>0"
+	query := buildReadGitHubRepoSearchQuery(req, cfg)
+	if githubRepoInventoryUsesListAPI(query) {
+		return runGitHubRepoList(ctx, cfg, task, req, query)
 	}
 
 	perPage := sanitizePerPage(req.PerPage)
@@ -712,12 +701,16 @@ func parseReadGitHubRequest(raw string, cfg GitHubEnvConfig, defaultMode string)
 	}
 
 	if req.Query == "" {
-		req.Query = sanitizeGitHubSearchQuery(raw)
+		if normalizeReadGitHubMode(req.Mode) == readGitHubModeCodeSearch {
+			req.Query = sanitizeGitHubCodeSearchQuery(raw, strings.TrimSpace(req.Owner), strings.TrimSpace(req.Repo))
+		} else {
+			req.Query = sanitizeGitHubSearchQuery(raw)
+		}
 	}
 	if normalizeReadGitHubMode(req.Mode) == readGitHubModeRepoSearch && shouldForceInventoryScopeOnly(rawLower, req.Query) {
 		req.Query = ""
 	}
-	if req.Query == "" {
+	if req.Query == "" && normalizeReadGitHubMode(req.Mode) != readGitHubModeCodeSearch {
 		if req.Org != "" {
 			req.Query = "org:" + req.Org
 		} else if req.Owner != "" {
@@ -934,6 +927,46 @@ func sanitizeGitHubSearchQuery(raw string) string {
 	clean = reGitHubNoiseWords.ReplaceAllString(clean, " ")
 	clean = strings.Join(strings.Fields(clean), " ")
 	return strings.TrimSpace(clean)
+}
+
+// sanitizeGitHubCodeSearchQuery turns conversational Slack questions into GitHub /search/code terms.
+// Owner/repo tokens are removed when both are set because runGitHubCodeSearch adds repo:owner/name.
+func sanitizeGitHubCodeSearchQuery(raw, owner, repo string) string {
+	clean := sanitizeGitHubSearchQuery(raw)
+	clean = reGitHubCodeSearchNoise.ReplaceAllString(clean, " ")
+	clean = strings.Join(strings.Fields(clean), " ")
+	clean = stripGitHubCodeSearchRepoTokens(clean, owner, repo)
+	return strings.TrimSpace(clean)
+}
+
+func stripGitHubCodeSearchRepoTokens(query, owner, repo string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return query
+	}
+	owner = strings.TrimSpace(owner)
+	repo = strings.TrimSpace(repo)
+	if owner == "" && repo == "" {
+		return query
+	}
+	lo, lr := strings.ToLower(owner), strings.ToLower(repo)
+	tokens := strings.Fields(query)
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		base := strings.Trim(t, ",.;:!?\"'")
+		bl := strings.ToLower(base)
+		if lr != "" && bl == lr {
+			continue
+		}
+		if lo != "" && bl == lo {
+			continue
+		}
+		if lo != "" && lr != "" && bl == lo+"/"+lr {
+			continue
+		}
+		out = append(out, t)
+	}
+	return strings.Join(out, " ")
 }
 
 func hasExplicitGitHubScopeQualifier(query string) bool {
