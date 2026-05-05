@@ -59,3 +59,36 @@ func TestConversationToneConstraintsIncludesSingleSpeakerRule(t *testing.T) {
 		t.Fatalf("conversationToneConstraints missing single-speaker guard: %q", got)
 	}
 }
+
+func TestConversationSystemInstructionBindsEmployeeIdentity(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		employeeID string
+		mustContain []string
+		mustNotHaveRossLead bool // true when instruction should not open as "You are Ross" (non-ross)
+	}{
+		{employeeID: "joanne", mustContain: []string{"Joanne", "executive operations"}, mustNotHaveRossLead: true},
+		{employeeID: "ross", mustContain: []string{"Ross", "engineering"}, mustNotHaveRossLead: false},
+		{employeeID: "alex", mustContain: []string{"Alex", "GTM"}, mustNotHaveRossLead: true},
+		{employeeID: "tim", mustContain: []string{"Tim", "experiments"}, mustNotHaveRossLead: true},
+		{employeeID: "garth", mustContain: []string{"Garth", "research"}, mustNotHaveRossLead: true},
+		{employeeID: "anna", mustContain: []string{"Anna", "visual"}, mustNotHaveRossLead: true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.employeeID, func(t *testing.T) {
+			t.Parallel()
+			sys := conversationSystemInstruction(tc.employeeID)
+			low := strings.ToLower(sys)
+			for _, needle := range tc.mustContain {
+				if !strings.Contains(low, strings.ToLower(needle)) {
+					t.Fatalf("conversationSystemInstruction(%q) missing %q:\n%s", tc.employeeID, needle, sys)
+				}
+			}
+			if tc.mustNotHaveRossLead && strings.HasPrefix(strings.TrimSpace(low), "you are ross") {
+				t.Fatalf("conversationSystemInstruction(%q) must not lead as Ross:\n%s", tc.employeeID, sys)
+			}
+		})
+	}
+}
