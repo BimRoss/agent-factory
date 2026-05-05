@@ -42,6 +42,8 @@ type Config struct {
 	CompanyChannelsRedisKey          string
 	CapabilityRoutingEventsRedisKey  string
 	ChannelKnowledgeRedisKeyFmt      string
+	// OrchestratorSlackBotToken is the slack-orchestrator bot token (channels:history) for channel-knowledge refresh.
+	OrchestratorSlackBotToken string
 	MakeACompanyProfileKeyPrefix     string
 	OnboardingChannelID              string
 	JoanneSlackBotToken              string
@@ -72,6 +74,7 @@ func LoadConfigFromEnv() (Config, error) {
 		CompanyChannelsRedisKey:          firstNonEmpty(os.Getenv("COMPANY_CHANNELS_REDIS_KEY"), defaultCompanyChannelsRedisKey),
 		CapabilityRoutingEventsRedisKey:  firstNonEmpty(os.Getenv("CAPABILITY_ROUTING_EVENTS_REDIS_KEY"), defaultCapabilityRoutingEventsKey),
 		ChannelKnowledgeRedisKeyFmt:      firstNonEmpty(os.Getenv("AGENT_FACTORY_CHANNEL_KNOWLEDGE_REDIS_KEY_FMT"), defaultChannelKnowledgeRedisKeyFmt),
+		OrchestratorSlackBotToken:        strings.TrimSpace(os.Getenv("ORCHESTRATOR_SLACK_BOT_TOKEN")),
 		MakeACompanyProfileKeyPrefix:     firstNonEmpty(os.Getenv("AGENT_FACTORY_MAKEACOMPANY_PROFILE_KEY_PREFIX"), defaultMakeACompanyProfileKeyPrefix),
 		OnboardingChannelID:              strings.TrimSpace(os.Getenv("ONBOARDING_CHANNEL")),
 		JoanneSlackBotToken:              strings.TrimSpace(os.Getenv("JOANNE_SLACK_BOT_TOKEN")),
@@ -113,6 +116,7 @@ func Run(cfg Config) error {
 	mux.HandleFunc("/v1/admin/company-channels/discover", s.requireInternal(s.handleCompanyChannelsDiscover))
 	mux.HandleFunc("/v1/admin/company-channels/registry-prune", s.requireInternal(s.handleCompanyChannelsRegistryPrune))
 	mux.HandleFunc("/v1/admin/company-channels/", s.requireInternal(s.handleCompanyChannelByID))
+	mux.HandleFunc("POST /v1/admin/channel-knowledge/{channelId}/refresh", s.requireInternal(s.handleChannelKnowledgePostRefresh))
 	mux.HandleFunc("/v1/admin/channel-knowledge/", s.requireInternal(s.handleChannelKnowledge))
 	mux.HandleFunc("/v1/admin/capability-routing-events", s.requireInternal(s.handleCapabilityRoutingEvents))
 	mux.HandleFunc("/v1/admin/joanne-humans-welcome-trigger", s.requireInternal(s.handleJoanneWelcomeTrigger))
@@ -208,6 +212,7 @@ func (s *Server) handleCompanyChannelsDiscover(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	s.backgroundRefreshChannelDigests(upserted)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"upserted":       upserted,
 		"upserted_count": len(upserted),
@@ -282,6 +287,24 @@ func (s *Server) handleCompanyChannelByID(w http.ResponseWriter, r *http.Request
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleChannelKnowledgePostRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ch := strings.TrimSpace(r.PathValue("channelId"))
+	if ch == "" {
+		http.Error(w, "bad channel id", http.StatusBadRequest)
+		return
+	}
+	n, err := s.runChannelKnowledgeRefresh(r.Context(), ch)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "channel_id": ch})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "channel_id": ch, "digest_runes": n})
 }
 
 func (s *Server) handleChannelKnowledge(w http.ResponseWriter, r *http.Request) {
