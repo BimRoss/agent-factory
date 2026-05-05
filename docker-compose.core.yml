@@ -45,8 +45,8 @@ services:
   agent-factory-admin:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - redis
@@ -163,8 +163,8 @@ services:
   agent-joanne:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - nats
@@ -226,8 +226,8 @@ services:
   agent-ross:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - nats
@@ -270,8 +270,8 @@ services:
   agent-alex:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - nats
@@ -314,8 +314,8 @@ services:
   agent-garth:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - nats
@@ -358,8 +358,8 @@ services:
   agent-tim:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - nats
@@ -402,8 +402,8 @@ services:
   agent-anna:
     profiles: ["local"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     restart: unless-stopped
     depends_on:
       - nats

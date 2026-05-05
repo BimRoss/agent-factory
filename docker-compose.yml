@@ -2,8 +2,8 @@ services:
   agent-factory:
     profiles: ["local", "integration"]
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: agent-factory/Dockerfile
     environment:
       SHARED_CONTRACTS_DIR: ${SHARED_CONTRACTS_DIR:-/workspace/shared-contracts}
       SKILL_FACTORY_DIR: ${SKILL_FACTORY_DIR:-/workspace/skill-factory}
