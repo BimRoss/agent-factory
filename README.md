@@ -1,5 +1,16 @@
 # agent-factory
 
+## Decommissioned runtime ownership (hard cut)
+
+`agent-factory` is no longer the active runtime owner for Ross/Joanne skill execution.
+
+The active greenfield path is:
+
+- `agents-mcp-server` for thin agent runtime
+- `skills-mcp-server` for Agent Skills spec skills + MCP tool execution
+
+Keep this repository as migration/reference material only.
+
 Greenfield runtime for MakeACompany employee execution.
 
 ## Mission
